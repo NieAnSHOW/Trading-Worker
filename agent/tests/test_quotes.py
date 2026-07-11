@@ -6,7 +6,14 @@
 
 from __future__ import annotations
 
+import time
+
 from backtest.loaders import eastmoney_client
+from src.market_quotes.provider import (
+    EastmoneyQuoteProvider,
+    Quote,
+    QuoteCache,
+)
 
 
 def _ulist_payload(rows: list[dict]) -> dict:
@@ -66,3 +73,40 @@ def test_get_sparkline_batch_skips_unresolvable(monkeypatch) -> None:
     monkeypatch.setattr(eastmoney_client, "_SPARKLINE_CACHE", {})
     out = eastmoney_client.get_sparkline_batch(["BADSYMBOL.XX"], days=7)
     assert out == {}
+
+
+def test_eastmoney_provider_marks_missing_symbols(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "src.market_quotes.provider.get_quotes_batch",
+        lambda symbols: [{"symbol": "600519.SH", "code": "600519", "name": "贵州茅台",
+                          "price": 1680.0, "change_pct": 1.23, "change": 20.4,
+                          "volume": 12345.0, "amount": 207000000.0, "turnover_rate": 0.98}],
+    )
+
+    provider = EastmoneyQuoteProvider()
+    quotes = provider.fetch_quotes(["600519.SH", "999999.SH"])
+    assert quotes[0].symbol == "600519.SH" and quotes[0].price == 1680.0
+    assert quotes[1].symbol == "999999.SH" and quotes[1].missing is True
+
+
+def test_ttl_cache_hits_within_window_then_expires(monkeypatch) -> None:
+    calls = {"n": 0}
+    clock = {"t": 1000.0}
+
+    def fake_fetch(symbols):
+        calls["n"] += 1
+        return [Quote(symbol=s, name=s, price=1.0) for s in symbols]
+
+    # 用可控时钟桩替换 monotonic,避免依赖真实系统运行时间
+    monkeypatch.setattr(time, "monotonic", lambda: clock["t"])
+
+    cache = QuoteCache(ttl_seconds=8)
+    # 同一篮子两次 → 只触上游一次
+    cache.get(["600519.SH", "000001.SZ"], market="a_share", fetch=fake_fetch)
+    cache.get(["000001.SZ", "600519.SH"], market="a_share", fetch=fake_fetch)  # 乱序同 key
+    assert calls["n"] == 1
+
+    # 推进时钟越过 8s TTL → 再触一次
+    clock["t"] += 9
+    cache.get(["600519.SH", "000001.SZ"], market="a_share", fetch=fake_fetch)
+    assert calls["n"] == 2
