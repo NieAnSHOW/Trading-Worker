@@ -1,8 +1,8 @@
 ## 1. 后端：watchlist 存储
 
 - [x] 1.1 新建 watchlist SQLite store（仿 `agent/src/goal/store.py`）：`CREATE TABLE IF NOT EXISTS`、CRUD 方法、首次访问自动建表
-- [ ] 1.2 watchlist REST 路由（`GET/POST/DELETE /watchlist`）并挂载到 `agent/api_server.py`；保证 agent 可程序化调用同一存储
-- [ ] 1.3 股票搜索端点（代码 / 名称 → 候选列表，含市场标记），供前端添加自选
+- [x] 1.2 watchlist REST 路由（`GET/POST/DELETE /watchlist`）并挂载到 `agent/api_server.py`；保证 agent 可程序化调用同一存储
+- [x] 1.3 股票搜索端点（代码 / 名称 → 候选列表，含市场标记），供前端添加自选
 
 ## 2. 后端：market-quotes 能力
 
