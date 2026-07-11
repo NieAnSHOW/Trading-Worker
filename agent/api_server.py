@@ -323,6 +323,10 @@ from src.api.live_routes import (  # noqa: F401, E402
 from src.api.alpha_routes import register_alpha_routes  # noqa: E402
 register_alpha_routes(app)
 
+# --- Watchlist（自选股）---
+from src.api.watchlist_routes import register_watchlist_routes  # noqa: E402
+register_watchlist_routes(app)
+
 
 # ============================================================================
 # Scheduled Research Routes - defined in src/api/scheduled_routes.py
