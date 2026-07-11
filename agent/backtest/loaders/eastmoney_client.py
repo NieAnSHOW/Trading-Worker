@@ -320,3 +320,133 @@ def fetch_kline(
         if parsed is not None:
             rows.append(parsed)
     return rows
+
+
+# Eastmoney push2 batch quote snapshot endpoint. ulist 接受自定义 secids 列表
+# （逗号拼接），返回每只 instrument 的最新价 + 涨跌 + 量额 + 换手率。
+# 严禁改用 qt/clist/get —— clist 是市场宇宙选择器，不接受自定义 secids（见
+# Design Doc §7）。
+_QUOTES_URL = "https://push2.eastmoney.com/api/qt/ulist/get"
+
+_QUOTES_FIELDS = "f2,f3,f4,f5,f6,f8,f12,f14"  # 与 market_screener_tool._FIELDS 一致
+
+
+def _num(value: Any) -> float | None:
+    """Coerce one Eastmoney numeric cell to float; '-' / None -> None."""
+    if value is None or value == "-":
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def get_quotes_batch(symbols: list[str]) -> list[dict[str, Any]]:
+    """Fetch latest snapshot for the given symbols via qt/ulist/get.
+
+    Args:
+        symbols: Vibe-Trading symbols (e.g. ``"600519.SH"``); each is resolved
+            to its Eastmoney secid via :func:`resolve_secid`. Unresolvable
+            symbols are skipped silently.
+
+    Returns:
+        One dict per symbol that resolved and returned a row, each shaped
+        ``{symbol, code, name, price, change_pct, change, volume, amount,
+        turnover_rate}`` (``None`` where the upstream sentinel ``"-"`` appears).
+        Symbols absent from the upstream response are omitted; the caller is
+        responsible for surfacing them as ``missing``.
+    """
+    secids: list[tuple[str, str]] = []  # (symbol, secid)
+    for symbol in symbols:
+        secid = resolve_secid(symbol)
+        if secid:
+            secids.append((symbol, secid))
+    if not secids:
+        return []
+
+    payload = get_json(
+        _QUOTES_URL,
+        params={
+            "secids": ",".join(secid for _, secid in secids),
+            "fields": _QUOTES_FIELDS,
+            "fltt": "2",  # 价格保留 2 位小数（Eastmoney 约定）
+        },
+    )
+    rows = _extract_diff_rows(payload)
+    by_code = {str(r.get("f12")): r for r in rows if isinstance(r, dict) and r.get("f12")}
+
+    out: list[dict[str, Any]] = []
+    for symbol, secid in secids:
+        code = secid.split(".", 1)[1]
+        row = by_code.get(code)
+        if not row:
+            continue
+        out.append({
+            "symbol": symbol,
+            "code": code,
+            "name": str(row.get("f14", "")),
+            "price": _num(row.get("f2")),
+            "change_pct": _num(row.get("f3")),
+            "change": _num(row.get("f4")),
+            "volume": _num(row.get("f5")),
+            "amount": _num(row.get("f6")),
+            "turnover_rate": _num(row.get("f8")),
+        })
+    return out
+
+
+def _extract_diff_rows(payload: Any) -> list[dict[str, Any]]:
+    """Pull ``data.diff`` list out of an ulist/clist-style payload."""
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return []
+    diff = data.get("diff")
+    return [r for r in (diff or []) if isinstance(r, dict)]
+
+
+# Sparkline 进程内 TTL 缓存：key=symbol, value=(closes, expires_at)。
+# 日 K 对过往日期不变,~5 分钟内跨多 tab / 轮询复用,避免反复打 push2his。
+_SPARKLINE_TTL_S = 300.0
+_SPARKLINE_CACHE: dict[str, tuple[list[float], float]] = {}
+
+
+def get_sparkline_batch(symbols: list[str], days: int = 7) -> dict[str, list[float]]:
+    """Return recent daily closes for each symbol (sparkline source).
+
+    复用 :func:`fetch_kline`（qt/stock/kline/get, 日 K）。每个 symbol 先
+    :func:`resolve_secid`,再拉日 K 取末尾 ``days`` 个 ``close``。自带进程内
+    TTL 缓存（日 K 过往不变）。resolve/拉取失败或无 K 线的 symbol 不出现在
+    返回 dict 中（上层置空）。
+
+    Args:
+        symbols: Vibe-Trading symbols (e.g. ``"600519.SH"``).
+        days: 取近 N 个交易日的收盘（默认 7）。
+
+    Returns:
+        ``{symbol: [close, ...]}``（升序,长度 <= days）;失败的 symbol 缺省。
+    """
+    import time
+
+    out: dict[str, list[float]] = {}
+    now = time.monotonic()
+    for symbol in symbols:
+        hit = _SPARKLINE_CACHE.get(symbol)
+        if hit and now < hit[1]:
+            out[symbol] = list(hit[0])
+            continue
+        secid = resolve_secid(symbol)
+        if not secid:
+            continue
+        try:
+            bars = fetch_kline(secid, klt=KLT_BY_INTERVAL["1D"])
+        except Exception as exc:  # noqa: BLE001 - 单只失败不阻断
+            logger.warning("sparkline fetch_kline failed for %s: %s", symbol, exc)
+            continue
+        closes = [float(b["close"]) for b in bars if b.get("close") is not None]
+        if closes:
+            tail = closes[-days:]
+            out[symbol] = list(tail)
+            _SPARKLINE_CACHE[symbol] = (list(tail), now + _SPARKLINE_TTL_S)
+    return out
