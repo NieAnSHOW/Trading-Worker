@@ -6,8 +6,8 @@
 
 ## 2. 后端：market-quotes 能力
 
-- [ ] 2.1 定义 `QuoteProvider` 接口与 `Quote` 数据模型；A 股实现 `EastmoneyQuoteProvider`（复用 `market_screener_tool` 的 `push2/clist` 路径 + `_http.py` 的 `HostThrottle`）
-- [ ] 2.2 进程内 TTL 缓存层（key = 排序后的 symbols fingerprint）
+- [x] 2.1 定义 `QuoteProvider` 接口与 `Quote` 数据模型；A 股实现 `EastmoneyQuoteProvider`（复用 `market_screener_tool` 的 `push2/clist` 路径 + `_http.py` 的 `HostThrottle`）
+- [x] 2.2 进程内 TTL 缓存层（key = 排序后的 symbols fingerprint）
 - [ ] 2.3 A 股交易时段判定（工作日 9:30–11:30、13:00–15:00）+ `market_closed` 标志
 - [ ] 2.4 批量 quotes 路由（`POST /quotes`）：按市场分发，未支持市场返回明确 `该市场暂未支持` 响应
 
