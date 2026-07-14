@@ -258,8 +258,9 @@ export function Settings() {
     setInstallingPkg(pkg);
     try {
       const { job_id } = await api.installOptionalDep(pkg);
+      const streamUrl = await api.optionalDepStatusUrl(job_id);
       await new Promise<void>((resolve, reject) => {
-        const es = new EventSource(api.optionalDepStatusUrl(job_id));
+        const es = new EventSource(streamUrl);
         es.addEventListener("done", () => {
           es.close();
           resolve();
@@ -274,6 +275,10 @@ export function Settings() {
           }
           reject(new Error(message));
         });
+        es.onerror = () => {
+          es.close();
+          reject(new Error(t("settings.channels.depInstallFailed")));
+        };
       });
       toast.success(t("settings.channels.depInstalled"));
       await refreshChannelStatus();

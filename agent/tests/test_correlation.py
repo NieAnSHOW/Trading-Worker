@@ -3,11 +3,40 @@
 import numpy as np
 import pandas as pd
 import pytest
+from fastapi.testclient import TestClient
+
+import api_server
+from src.api import system_routes
 
 from backtest.correlation import (
     _rolling_correlation_matrix,
     infer_market,
 )
+
+
+def test_correlation_requires_auth_for_remote_clients(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("API_AUTH_KEY", "correlation-secret")
+    monkeypatch.setattr(api_server, "_API_KEY", "correlation-secret")
+    client = TestClient(api_server.app, client=("203.0.113.10", 50000))
+
+    response = client.get("/correlation?codes=BTC-USDT,ETH-USDT")
+
+    assert response.status_code == 401
+
+
+def test_correlation_rate_limits_each_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("API_AUTH_KEY", "correlation-secret")
+    monkeypatch.setattr(api_server, "_API_KEY", "correlation-secret")
+    monkeypatch.setattr(system_routes, "_CORRELATION_RATE_LIMIT", 1)
+    system_routes._correlation_request_times.clear()
+    client = TestClient(api_server.app, client=("203.0.113.10", 50000))
+    headers = {"Authorization": "Bearer correlation-secret"}
+
+    first = client.get("/correlation?codes=only-one", headers=headers)
+    limited = client.get("/correlation?codes=only-one", headers=headers)
+
+    assert first.status_code == 400
+    assert limited.status_code == 429
 
 
 class TestInferMarket:

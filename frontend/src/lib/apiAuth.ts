@@ -18,13 +18,21 @@ export function authHeaders(): Record<string, string> {
   return key ? { Authorization: `Bearer ${key}` } : {};
 }
 
-export function authQuerySuffix(): string {
+export async function withAuthTicket(url: string): Promise<string> {
   const key = getApiAuthKey();
-  return key ? `api_key=${encodeURIComponent(key)}` : "";
-}
+  if (!key) return url;
 
-export function withAuthQuery(url: string): string {
-  const suffix = authQuerySuffix();
-  if (!suffix) return url;
-  return `${url}${url.includes("?") ? "&" : "?"}${suffix}`;
+  const response = await fetch("/auth/sse-ticket", {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    throw new Error(`SSE ticket request failed (HTTP ${response.status})`);
+  }
+
+  const data = await response.json() as { ticket?: unknown };
+  if (typeof data.ticket !== "string" || !data.ticket) {
+    throw new Error("SSE ticket response was invalid");
+  }
+  return `${url}${url.includes("?") ? "&" : "?"}ticket=${encodeURIComponent(data.ticket)}`;
 }

@@ -349,15 +349,19 @@ def test_configured_api_key_required_for_session_event_stream(
     assert response.status_code == 401
 
 
-def test_session_event_stream_accepts_query_token_for_browser_eventsource(
+def test_session_event_stream_rejects_query_api_key_and_accepts_one_time_ticket(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("API_AUTH_KEY", "secret")
     monkeypatch.setattr(api_server, "_API_KEY", "secret")
 
-    response = _remote_client().get("/sessions/missing/events?api_key=secret")
+    client = _remote_client()
+    rejected = client.get("/sessions/missing/events?api_key=secret")
+    ticket = api_server._mint_sse_ticket()
+    accepted = client.get(f"/sessions/missing/events?ticket={ticket}")
 
-    assert response.status_code in {404, 501}
+    assert rejected.status_code == 401
+    assert accepted.status_code in {404, 501}
 
 
 def test_shell_tools_disabled_for_loopback_api_request_by_default() -> None:

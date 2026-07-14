@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Dict
 
@@ -69,11 +71,33 @@ async def _spa_html_deep_link_fallback(request: Request, call_next):
 # ============================================================================
 
 
+def _write_env_text_atomically(path: Path, content: str) -> None:
+    """Replace a dotenv file atomically with owner-only permissions."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_name, path)
+        # os.replace preserves the temporary file mode. Reassert it for filesystems
+        # that apply platform-specific defaults during replacement.
+        os.chmod(path, 0o600)
+    except Exception:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def _ensure_agent_env_file() -> Path:
     """Ensure the project-local agent/.env exists."""
     env_path = _host_attr("ENV_PATH", ENV_PATH)
     if not env_path.exists():
-        env_path.write_text("# Created by Vibe-Trading Web UI settings.\n", encoding="utf-8")
+        _write_env_text_atomically(env_path, "# Created by Vibe-Trading Web UI settings.\n")
     return env_path
 
 
@@ -148,7 +172,7 @@ def _write_env_values(path: Path, updates: Dict[str, str]) -> None:
         lines.append("# Updated from Web UI")
         for key in missing:
             lines.append(f"{key}={_format_env_value(updates[key])}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _write_env_text_atomically(path, "\n".join(lines) + "\n")
 
 
 def _is_configured_secret(value: str, placeholders: set[str]) -> bool:

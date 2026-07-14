@@ -8,14 +8,18 @@ Usage: ``python -m backtest.runner <run_dir>``
 """
 
 import ast
+from contextlib import contextmanager
 import importlib.util
 import inspect
 import json
 import logging
+import os
+import shutil
 import sys
+import tempfile
 import time as _time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, Iterator, List, Optional
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, model_validator, field_validator
@@ -45,12 +49,20 @@ from backtest.engines._market_hooks import (  # noqa: F401  (re-exported)
     _is_china_futures,
 )
 
+try:  # POSIX-only; absent on Windows.
+    import resource
+except ImportError:  # pragma: no cover - Windows
+    resource = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 _VALID_INTERVALS = {"1m", "5m", "15m", "30m", "1H", "4H", "1D"}
 _VALID_ENGINES = {"daily", "options"}
 _PRICE_PANEL_COLUMNS = ("open", "high", "low", "close", "volume", "vwap", "amount")
 _FUND_PREFIX = "fund:"
+
+_SANDBOX_RLIMIT_AS_BYTES = 4 * 1024 * 1024 * 1024
+_SANDBOX_RLIMIT_NOFILE = 512
 
 
 class BacktestConfigSchema(BaseModel):
@@ -243,6 +255,262 @@ def _validate_class_body(node: ast.ClassDef) -> None:
         )
 
 
+# The structural checks above stop import-time execution only. Generated code
+# runs later through SignalEngine methods, so scan that reachable call graph too.
+_FORBIDDEN_IMPORT_MODULES = frozenset(
+    {
+        "socket",
+        "socketserver",
+        "subprocess",
+        "urllib",
+        "urllib2",
+        "urllib3",
+        "http",
+        "requests",
+        "httpx",
+        "aiohttp",
+        "ftplib",
+        "smtplib",
+        "telnetlib",
+        "multiprocessing",
+        "ctypes",
+        "importlib",
+        "builtins",
+        "shutil",
+        "sys",
+    }
+)
+_FORBIDDEN_OS_ATTRS = frozenset(
+    {
+        "system",
+        "popen",
+        "popen2",
+        "popen3",
+        "popen4",
+        "fork",
+        "forkpty",
+        "putenv",
+        "unsetenv",
+        "getenv",
+        "environ",
+        "environb",
+        "startfile",
+        "remove",
+        "unlink",
+        "rename",
+        "replace",
+        "mkdir",
+        "makedirs",
+        "rmdir",
+        "removedirs",
+        "chmod",
+        "chown",
+        "listdir",
+        "scandir",
+        "walk",
+        "stat",
+        "lstat",
+        "readlink",
+        "symlink",
+        "link",
+    }
+)
+_FORBIDDEN_BUILTINS = frozenset(
+    {
+        "eval",
+        "exec",
+        "compile",
+        "__import__",
+        "__builtins__",
+        "globals",
+        "locals",
+        "vars",
+        "breakpoint",
+        "getattr",
+        "setattr",
+        "delattr",
+    }
+)
+_OPEN_WRITE_MODE_CHARS = frozenset("wax+")
+_FORBIDDEN_FILE_ATTRS = frozenset(
+    {
+        "open",
+        "read_text",
+        "read_bytes",
+        "write_text",
+        "write_bytes",
+        "touch",
+        "unlink",
+        "rename",
+        "replace",
+        "mkdir",
+        "rmdir",
+        "chmod",
+        "symlink_to",
+        "hardlink_to",
+        "to_csv",
+        "to_json",
+        "to_pickle",
+        "to_excel",
+        "to_feather",
+        "to_hdf",
+        "to_parquet",
+        "to_sql",
+        "to_stata",
+        "read_csv",
+        "read_json",
+        "read_pickle",
+        "read_excel",
+        "read_feather",
+        "read_hdf",
+        "read_parquet",
+        "read_sql",
+        "read_stata",
+    }
+)
+_SCRUB_MSG = "is not allowed inside generated strategy code"
+
+
+def _is_forbidden_os_attr(attr: str) -> bool:
+    """Return whether ``os.<attr>`` can spawn a process or access its environment."""
+    return attr in _FORBIDDEN_OS_ATTRS or attr.startswith(("spawn", "exec"))
+
+
+def _attribute_root_name(node: ast.Attribute) -> str | None:
+    """Return the leftmost name in an attribute chain."""
+    current: ast.AST = node
+    while isinstance(current, ast.Attribute):
+        current = current.value
+    return current.id if isinstance(current, ast.Name) else None
+
+
+def _reject_forbidden_open(node: ast.Call) -> None:
+    """Reject ``open`` calls that can escape the run directory or write files."""
+    func = node.func
+    is_builtin_open = isinstance(func, ast.Name) and func.id == "open"
+    is_io_os_open = (
+        isinstance(func, ast.Attribute)
+        and func.attr == "open"
+        and isinstance(func.value, ast.Name)
+        and func.value.id in {"io", "os"}
+    )
+    if not (is_builtin_open or is_io_os_open):
+        return
+
+    mode_node: ast.AST | None = node.args[1] if len(node.args) >= 2 else None
+    for keyword in node.keywords:
+        if keyword.arg == "mode":
+            mode_node = keyword.value
+    if mode_node is not None:
+        if not (isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str)):
+            raise ValueError(f"open() with a non-literal mode {_SCRUB_MSG}")
+        if any(char in _OPEN_WRITE_MODE_CHARS for char in mode_node.value):
+            raise ValueError(f"Writing files via open(mode={mode_node.value!r}) {_SCRUB_MSG}")
+
+    path_node = node.args[0] if node.args else None
+    if not (isinstance(path_node, ast.Constant) and isinstance(path_node.value, str)):
+        raise ValueError(f"open() with a non-literal path {_SCRUB_MSG}")
+    path = path_node.value
+    if path.startswith(("/", "~", "\\")) or ".." in path or (len(path) > 1 and path[1] == ":"):
+        raise ValueError(f"open() with a non-relative path {path!r} {_SCRUB_MSG}")
+
+
+def _reject_forbidden_node(node: ast.AST, module_aliases: Dict[str, str]) -> None:
+    """Raise ``ValueError`` when an AST node performs a forbidden operation."""
+    if isinstance(node, ast.Import):
+        for alias in node.names:
+            if alias.name.split(".")[0] in _FORBIDDEN_IMPORT_MODULES:
+                raise ValueError(f"Import of {alias.name!r} {_SCRUB_MSG}")
+    elif isinstance(node, ast.ImportFrom):
+        root = (node.module or "").split(".")[0]
+        if root in _FORBIDDEN_IMPORT_MODULES:
+            raise ValueError(f"Import from {node.module!r} {_SCRUB_MSG}")
+        if root == "os":
+            for alias in node.names:
+                if _is_forbidden_os_attr(alias.name):
+                    raise ValueError(f"Import of os.{alias.name} {_SCRUB_MSG}")
+    elif isinstance(node, ast.Attribute):
+        attribute_root = _attribute_root_name(node)
+        root = module_aliases.get(attribute_root or "", attribute_root)
+        if node.attr.startswith("__"):
+            raise ValueError(f"Use of dunder attribute {node.attr!r} {_SCRUB_MSG}")
+        if root in _FORBIDDEN_IMPORT_MODULES:
+            raise ValueError(f"Use of {attribute_root}.{node.attr} {_SCRUB_MSG}")
+        if root == "os" and _is_forbidden_os_attr(node.attr):
+            raise ValueError(f"Use of {attribute_root}.{node.attr} {_SCRUB_MSG}")
+        if root == "functools" and node.attr == "partial":
+            raise ValueError(f"Use of {attribute_root}.partial {_SCRUB_MSG}")
+        if node.attr in _FORBIDDEN_FILE_ATTRS:
+            raise ValueError(f"Use of file API {node.attr!r} {_SCRUB_MSG}")
+    elif isinstance(node, ast.Name):
+        if node.id in _FORBIDDEN_BUILTINS:
+            raise ValueError(f"Use of {node.id!r} {_SCRUB_MSG}")
+    elif isinstance(node, ast.Call):
+        _reject_forbidden_open(node)
+
+
+def _record_import_aliases(node: ast.AST, aliases: Dict[str, str]) -> None:
+    """Record local bindings introduced by an import statement."""
+    if isinstance(node, ast.Import):
+        for alias in node.names:
+            aliases[alias.asname or alias.name.split(".")[0]] = alias.name.split(".")[0]
+    elif isinstance(node, ast.ImportFrom) and node.module:
+        root = node.module.split(".")[0]
+        for alias in node.names:
+            aliases[alias.asname or alias.name] = root
+
+
+def _scan_runtime_reachable(tree: ast.Module) -> None:
+    """Scan SignalEngine methods and bare-name module helpers they call."""
+    engine_cls = next(
+        (node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "SignalEngine"),
+        None,
+    )
+    if engine_cls is None:
+        return
+
+    module_funcs = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    module_aliases: Dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            _reject_forbidden_node(node, module_aliases)
+        _record_import_aliases(node, module_aliases)
+    worklist: list[ast.AST] = [
+        method
+        for method in engine_cls.body
+        if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    visited: set[int] = set()
+    while worklist:
+        function = worklist.pop()
+        if id(function) in visited:
+            continue
+        visited.add(id(function))
+        function_module_aliases = dict(module_aliases)
+        helper_aliases: Dict[str, ast.AST] = {}
+        for node in ast.walk(function):
+            _record_import_aliases(node, function_module_aliases)
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Name)
+            ):
+                target = module_funcs.get(node.value.id)
+                if target is not None:
+                    helper_aliases[node.targets[0].id] = target
+
+            _reject_forbidden_node(node, function_module_aliases)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                target = module_funcs.get(node.func.id) or helper_aliases.get(node.func.id)
+                if target is not None:
+                    worklist.append(target)
+
+
 def _validate_signal_engine_source(file_path: Path) -> None:
     """Reject import-time executable statements before loading signal_engine.py."""
     try:
@@ -271,6 +539,8 @@ def _validate_signal_engine_source(file_path: Path) -> None:
         raise ValueError(
             f"Executable top-level statement {type(node).__name__} is not allowed"
         )
+
+    _scan_runtime_reachable(tree)
 
 
 def _validate_signal_engine_class(engine_cls) -> None:
@@ -625,9 +895,78 @@ def _maybe_inject_fundamentals_for_factor_panel(
     return _project_panel_fields_to_data_map(data_map, panel, fund_columns)
 
 
+def _prepare_strategy_home() -> Path:
+    """Create an empty ephemeral HOME for generated strategy execution."""
+    return Path(tempfile.mkdtemp(prefix="vibe-backtest-home-"))
+
+
+def _apply_posix_limits() -> list[tuple[int, tuple[int, int]]]:
+    """Apply reversible, best-effort limits to this backtest child process."""
+    if resource is None:
+        return []
+
+    previous_limits: list[tuple[int, tuple[int, int]]] = []
+    for limit_name, target in (
+        ("RLIMIT_AS", _SANDBOX_RLIMIT_AS_BYTES),
+        ("RLIMIT_NOFILE", _SANDBOX_RLIMIT_NOFILE),
+    ):
+        limit = getattr(resource, limit_name, None)
+        if limit is None:
+            continue
+        try:
+            previous = resource.getrlimit(limit)
+            soft_limit, hard_limit = previous
+            new_soft_limit = (
+                target if hard_limit == resource.RLIM_INFINITY else min(target, hard_limit)
+            )
+            if soft_limit <= new_soft_limit:
+                continue
+            resource.setrlimit(limit, (new_soft_limit, hard_limit))
+            previous_limits.append((limit, previous))
+        except (OSError, ValueError):
+            logger.debug("Could not apply POSIX resource limit %s", limit, exc_info=True)
+    return previous_limits
+
+
+@contextmanager
+def _strategy_execution_environment() -> Iterator[None]:
+    """Isolate HOME and apply best-effort process limits for generated code."""
+    environment_keys = ("HOME", "USERPROFILE", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME")
+    previous_environment = {key: os.environ.get(key) for key in environment_keys}
+
+    sandbox_home: Path | None = None
+    previous_limits: list[tuple[int, tuple[int, int]]] = []
+    try:
+        try:
+            sandbox_home = _prepare_strategy_home()
+        except OSError:
+            logger.warning("Could not create temporary HOME for generated backtest code", exc_info=True)
+        if sandbox_home is not None:
+            os.environ["HOME"] = str(sandbox_home)
+            os.environ["USERPROFILE"] = str(sandbox_home)
+            os.environ["XDG_CACHE_HOME"] = str(sandbox_home / ".cache")
+            os.environ["XDG_CONFIG_HOME"] = str(sandbox_home / ".config")
+            os.environ["XDG_DATA_HOME"] = str(sandbox_home / ".local" / "share")
+            previous_limits = _apply_posix_limits()
+        yield
+    finally:
+        for limit, previous in reversed(previous_limits):
+            try:
+                resource.setrlimit(limit, previous)
+            except (OSError, ValueError):
+                logger.debug("Could not restore POSIX resource limit %s", limit, exc_info=True)
+        for key, value in previous_environment.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        if sandbox_home is not None:
+            shutil.rmtree(sandbox_home, ignore_errors=True)
+
+
 # --- Main entry ---
 
-def main(run_dir: Path) -> None:
+def _run_backtest(run_dir: Path) -> None:
     """Load config, fetch data, run the selected backtest engine.
 
     With ``source="auto"``, routes each code through the appropriate loader.
@@ -639,19 +978,6 @@ def main(run_dir: Path) -> None:
             file is read so an arbitrary filesystem location cannot be used
             to source ``code/signal_engine.py``.
     """
-    # Guard the CLI entry point with the same root whitelist the MCP
-    # ``backtest`` tool already uses (src/tools/backtest_tool.py:23). Without
-    # this, ``python -m backtest.runner /tmp/attacker_path`` would happily
-    # import ``signal_engine.py`` from anywhere on disk; the AST scrubber
-    # below blocks executable top-level statements but a method body still
-    # runs on instantiation. See ``safe_run_dir`` for the policy.
-    from src.tools.path_utils import safe_run_dir
-    try:
-        run_dir = safe_run_dir(str(run_dir))
-    except ValueError as exc:
-        print(json.dumps({"error": str(exc)}))
-        sys.exit(1)
-
     config_path = run_dir / "config.json"
     if not config_path.exists():
         print(json.dumps({"error": "config.json not found"}))
@@ -787,6 +1113,22 @@ def main(run_dir: Path) -> None:
         counters.record_backtest(engine=engine_type, elapsed_ms=int((_time.time() - _bt_start) * 1000))
     except Exception:
         pass
+
+
+def main(run_dir: Path) -> None:
+    """Run a backtest with generated strategy execution isolated from the user HOME."""
+    # Validate the caller-supplied path before HOME isolation. ``safe_run_dir``
+    # derives its default allowed roots from Path.home().
+    from src.tools.path_utils import safe_run_dir
+
+    try:
+        resolved_run_dir = safe_run_dir(str(run_dir))
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}))
+        sys.exit(1)
+
+    with _strategy_execution_environment():
+        _run_backtest(resolved_run_dir)
 
 
 def _create_market_engine(source: str, config: dict, codes: List[str]):

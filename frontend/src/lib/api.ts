@@ -1,4 +1,4 @@
-import { authHeaders, withAuthQuery } from "@/lib/apiAuth";
+import { authHeaders, withAuthTicket } from "@/lib/apiAuth";
 
 const BASE = "";
 
@@ -123,7 +123,7 @@ export const api = {
       body: JSON.stringify(body),
     }),
   sseUrl: (sid: string, options?: { replay?: "active" }) => {
-    let url = withAuthQuery(`${BASE}/sessions/${sid}/events`);
+    let url = `${BASE}/sessions/${sid}/events`;
     if (options?.replay) url = appendQueryParam(url, "replay", options.replay);
     return url;
   },
@@ -137,7 +137,7 @@ export const api = {
     }),
   listSwarmRuns: () => request<SwarmRunSummary[]>("/swarm/runs"),
   getSwarmRun: (id: string) => request<Record<string, unknown>>(`/swarm/runs/${id}`),
-  swarmSseUrl: (id: string) => withAuthQuery(`${BASE}/swarm/runs/${id}/events`),
+  swarmSseUrl: (id: string) => withAuthTicket(`${BASE}/swarm/runs/${id}/events`),
   cancelSwarmRun: (id: string) =>
     request<{ status: string }>(`/swarm/runs/${id}/cancel`, { method: "POST" }),
   retrySwarmRun: (id: string) =>
@@ -187,14 +187,14 @@ export const api = {
       body: JSON.stringify(body),
     }),
   alphaBenchStreamUrl: (jobId: string) =>
-    withAuthQuery(`${BASE}/alpha/bench/${encodeURIComponent(jobId)}/stream`),
+    withAuthTicket(`${BASE}/alpha/bench/${encodeURIComponent(jobId)}/stream`),
   createAlphaCompare: (body: AlphaCompareRequest) =>
     request<{ status: string; job_id: string }>("/alpha/compare", {
       method: "POST",
       body: JSON.stringify(body),
     }),
   alphaCompareStreamUrl: (jobId: string) =>
-    withAuthQuery(`${BASE}/alpha/compare/${encodeURIComponent(jobId)}/stream`),
+    withAuthTicket(`${BASE}/alpha/compare/${encodeURIComponent(jobId)}/stream`),
 
   // Connector runtime channel — privileged surface actions (NOT agent tools).
   // commit is the ONLY action that writes a mandate; halt trips the kill switch.
@@ -242,7 +242,7 @@ export const api = {
       { method: "POST", body: JSON.stringify({ package: pkg }) },
     ),
   optionalDepStatusUrl: (jobId: string) =>
-    withAuthQuery(`${BASE}/optional-deps/status/${encodeURIComponent(jobId)}`),
+    withAuthTicket(`${BASE}/optional-deps/status/${encodeURIComponent(jobId)}`),
   getOptionalDepsMirror: () =>
     request<MirrorInfo>("/optional-deps/mirror"),
   updateOptionalDepsMirror: (body: UpdateMirrorRequest) =>

@@ -1,4 +1,4 @@
-import { getApiAuthKey, setApiAuthKey, authHeaders, authQuerySuffix, withAuthQuery } from "../apiAuth";
+import { getApiAuthKey, setApiAuthKey, authHeaders, withAuthTicket } from "../apiAuth";
 
 describe("apiAuth", () => {
   beforeEach(() => {
@@ -42,27 +42,38 @@ describe("apiAuth", () => {
     });
   });
 
-  describe("authQuerySuffix", () => {
-    it("returns empty string when no key", () => {
-      expect(authQuerySuffix()).toBe("");
-    });
-    it("returns encoded query param when key exists", () => {
+  describe("withAuthTicket", () => {
+    it("mints a ticket with the bearer header and never exposes the API key in the stream URL", async () => {
       setApiAuthKey("key with spaces");
-      expect(authQuerySuffix()).toBe("api_key=key%20with%20spaces");
-    });
-  });
+      const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ticket: "one-time-ticket" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+      vi.stubGlobal("fetch", fetchMock);
 
-  describe("withAuthQuery", () => {
-    it("returns url unchanged when no key", () => {
-      expect(withAuthQuery("https://api.com/data")).toBe("https://api.com/data");
+      await expect(withAuthTicket("https://api.com/data?foo=bar")).resolves.toBe(
+        "https://api.com/data?foo=bar&ticket=one-time-ticket",
+      );
+      expect(fetchMock).toHaveBeenCalledWith("/auth/sse-ticket", {
+        method: "POST",
+        headers: { Authorization: "Bearer key with spaces" },
+      });
+      expect(fetchMock.mock.calls[0][0]).not.toContain("api_key");
     });
-    it("appends with ? when url has no query string", () => {
-      setApiAuthKey("abc");
-      expect(withAuthQuery("https://api.com/data")).toBe("https://api.com/data?api_key=abc");
+
+    it("returns the original URL without minting a ticket when no API key is configured", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+
+      await expect(withAuthTicket("https://api.com/data")).resolves.toBe("https://api.com/data");
+      expect(fetchMock).not.toHaveBeenCalled();
     });
-    it("appends with & when url already has query string", () => {
-      setApiAuthKey("abc");
-      expect(withAuthQuery("https://api.com/data?foo=bar")).toBe("https://api.com/data?foo=bar&api_key=abc");
+
+    it("rejects rather than opening an unauthenticated stream when ticket minting fails", async () => {
+      setApiAuthKey("remote-key");
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("denied", { status: 401 })));
+
+      await expect(withAuthTicket("https://api.com/events")).rejects.toThrow("SSE ticket");
     });
   });
 });

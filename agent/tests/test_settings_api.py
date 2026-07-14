@@ -4,11 +4,25 @@ from __future__ import annotations
 
 from pathlib import Path
 import asyncio
+import stat
 
 import pytest
 from fastapi.testclient import TestClient
 
 import api_server
+from src.api import helpers
+
+
+def test_env_updates_are_atomic_and_owner_only(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("LANGCHAIN_PROVIDER=openai\n", encoding="utf-8")
+    env_path.chmod(0o644)
+
+    helpers._write_env_values(env_path, {"OPENAI_API_KEY": "private-key"})
+
+    assert "OPENAI_API_KEY=private-key" in env_path.read_text(encoding="utf-8")
+    assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
+    assert not list(tmp_path.glob(".env.*.tmp"))
 
 
 def test_settings_env_path_prefers_user_env_for_desktop_runtime(tmp_path: Path) -> None:
@@ -186,6 +200,10 @@ def test_llm_settings_treat_documented_key_placeholders_as_unconfigured(
 def test_update_llm_settings_persists_project_env(
     client: TestClient, tmp_path: Path,
 ) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("LANGCHAIN_PROVIDER=openai\n", encoding="utf-8")
+    env_path.chmod(0o644)
+
     response = client.put(
         "/settings/llm",
         json={
@@ -213,6 +231,7 @@ def test_update_llm_settings_persists_project_env(
     assert "OPENROUTER_API_KEY=or-secret-value" in env_text
     assert "LANGCHAIN_REASONING_EFFORT=max" in env_text
     assert "sk-or-v1-your-key-here" not in env_text
+    assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
 
 
 def test_get_data_source_settings_treats_placeholder_as_unconfigured(

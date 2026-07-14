@@ -42,6 +42,8 @@ from src.api.security import (  # noqa: F401, E402
     _EXTRA_LOOPBACK_HOSTS,
     _SAFE_BROWSER_METHODS,
     _SHELL_TOOLS_ENV,
+    _UvicornQuerySecretRedactionFilter,
+    _add_security_response_headers,
     _auth_credential_from_header_or_query,
     _configured_api_key,
     _default_gateway_ips,
@@ -58,6 +60,7 @@ from src.api.security import (  # noqa: F401, E402
     _reject_cross_site_browser_request,
     _reject_untrusted_loopback_host,
     _require_shutdown_authorization,
+    _mint_sse_ticket,
     _security,
     _shell_tools_enabled_for_request,
     _trusted_docker_loopback_ip,
@@ -171,6 +174,7 @@ app.add_middleware(
 # programmatically instead.
 app.middleware("http")(_reject_untrusted_loopback_host)
 app.middleware("http")(_spa_html_deep_link_fallback)
+app.middleware("http")(_add_security_response_headers)
 
 
 # ponytail: best-effort global error telemetry — must never affect requests
@@ -250,6 +254,10 @@ from src.api.system_routes import register_system_routes  # noqa: E402
 register_system_routes(app)
 
 from src.api.system_routes import _terminate_current_process  # noqa: F401, E402
+
+# --- Browser EventSource authentication ---
+from src.api.auth_routes import router as auth_router  # noqa: E402
+app.include_router(auth_router)
 
 # --- Settings ---
 from src.api.settings_routes import register_settings_routes  # noqa: E402
@@ -530,8 +538,10 @@ def _build_access_log_config() -> dict:
     from uvicorn.config import LOGGING_CONFIG
 
     cfg = copy.deepcopy(LOGGING_CONFIG)
-    cfg.setdefault("filters", {})["nonsuccess"] = {"()": _NonSuccessAccessFilter}
-    cfg["loggers"]["uvicorn.access"]["filters"] = ["nonsuccess"]
+    filters = cfg.setdefault("filters", {})
+    filters["nonsuccess"] = {"()": _NonSuccessAccessFilter}
+    filters["redact_query_secrets"] = {"()": _UvicornQuerySecretRedactionFilter}
+    cfg["loggers"]["uvicorn.access"]["filters"] = ["redact_query_secrets", "nonsuccess"]
     return cfg
 
 

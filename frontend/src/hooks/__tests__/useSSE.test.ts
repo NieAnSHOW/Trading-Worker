@@ -1,6 +1,10 @@
 import { renderHook, act } from "@testing-library/react";
 import { useSSE } from "../useSSE";
 
+const { withAuthTicketMock } = vi.hoisted(() => ({ withAuthTicketMock: vi.fn() }));
+
+vi.mock("@/lib/apiAuth", () => ({ withAuthTicket: withAuthTicketMock }));
+
 // ── Mock EventSource ──────────────────────────────────────
 
 type ESHandler = (e: MessageEvent) => void;
@@ -49,6 +53,8 @@ beforeEach(() => {
   MockEventSource.reset();
   vi.stubGlobal("EventSource", MockEventSource);
   vi.useFakeTimers();
+  withAuthTicketMock.mockReset();
+  withAuthTicketMock.mockImplementation(async (url: string) => url);
 });
 
 afterEach(() => {
@@ -56,28 +62,94 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+async function flushTicketRequest() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
 // ── Tests ─────────────────────────────────────────────────
 
 describe("useSSE — connect/disconnect", () => {
-  it("creates an EventSource on connect", () => {
+  it("creates an EventSource on connect", async () => {
     const { result } = renderHook(() => useSSE());
     act(() => result.current.connect("http://test/events", {}));
+    await flushTicketRequest();
     expect(MockEventSource.instances).toHaveLength(1);
     expect(MockEventSource.latest.url).toBe("http://test/events");
   });
 
-  it("closes previous EventSource on reconnect", () => {
+  it("mints a fresh ticket for each reconnect", async () => {
+    withAuthTicketMock
+      .mockResolvedValueOnce("http://test/events?ticket=first")
+      .mockResolvedValueOnce("http://test/events?ticket=second");
+    const { result } = renderHook(() =>
+      useSSE({ initialRetryMs: 100, maxRetryMs: 100, backoffFactor: 2 }),
+    );
+
+    act(() => result.current.connect("http://test/events", {}));
+    await flushTicketRequest();
+    expect(MockEventSource.instances).toHaveLength(1);
+    expect(MockEventSource.latest.url).toBe("http://test/events?ticket=first");
+
+    act(() => MockEventSource.latest.onerror?.());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(MockEventSource.instances).toHaveLength(2);
+    expect(MockEventSource.latest.url).toBe("http://test/events?ticket=second");
+    expect(withAuthTicketMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries with a fresh ticket after ticket minting fails", async () => {
+    withAuthTicketMock
+      .mockRejectedValueOnce(new Error("ticket denied"))
+      .mockResolvedValueOnce("http://test/events?ticket=fresh");
+    const { result } = renderHook(() =>
+      useSSE({ initialRetryMs: 100, maxRetryMs: 100, backoffFactor: 2 }),
+    );
+
+    act(() => result.current.connect("http://test/events", {}));
+    await flushTicketRequest();
+    expect(MockEventSource.instances).toHaveLength(0);
+    expect(result.current.getStatus()).toBe("reconnecting");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(MockEventSource.latest.url).toBe("http://test/events?ticket=fresh");
+  });
+
+  it("closes previous EventSource on reconnect", async () => {
     const { result } = renderHook(() => useSSE());
     const closeSpy = vi.fn();
 
     act(() => result.current.connect("http://test/events", {}));
+    await flushTicketRequest();
     MockEventSource.latest.close = closeSpy;
 
     act(() => result.current.connect("http://test/events2", {}));
     expect(closeSpy).toHaveBeenCalled();
   });
 
-  it("sets status to connected on open", () => {
+  it("does not attach a ticket resolved after disconnect", async () => {
+    let resolveTicket!: (url: string) => void;
+    withAuthTicketMock.mockReturnValueOnce(new Promise<string>((resolve) => {
+      resolveTicket = resolve;
+    }));
+    const { result } = renderHook(() => useSSE());
+
+    act(() => result.current.connect("http://test/events", {}));
+    act(() => result.current.disconnect());
+    await act(async () => {
+      resolveTicket("http://test/events?ticket=late");
+      await Promise.resolve();
+    });
+
+    expect(MockEventSource.instances).toHaveLength(0);
+  });
+
+  it("sets status to connected on open", async () => {
     const statuses: string[] = [];
     const { result } = renderHook(() => useSSE());
 
@@ -85,6 +157,7 @@ describe("useSSE — connect/disconnect", () => {
       result.current.onStatusChange((s) => statuses.push(s));
       result.current.connect("http://test/events", {});
     });
+    await flushTicketRequest();
 
     act(() => MockEventSource.latest.onopen?.());
     expect(statuses).toContain("connected");
@@ -107,7 +180,7 @@ describe("useSSE — connect/disconnect", () => {
 });
 
 describe("useSSE — event handling", () => {
-  it("dispatches typed events to handlers", () => {
+  it("dispatches typed events to handlers", async () => {
     const textDeltas: unknown[] = [];
     const { result } = renderHook(() => useSSE());
 
@@ -116,13 +189,14 @@ describe("useSSE — event handling", () => {
         text_delta: (data) => textDeltas.push(data),
       }),
     );
+    await flushTicketRequest();
 
     act(() => MockEventSource.latest.emit("text_delta", { content: "hello" }));
     expect(textDeltas).toHaveLength(1);
     expect(textDeltas[0]).toEqual({ content: "hello" });
   });
 
-  it("dispatches reasoning progress events", () => {
+  it("dispatches reasoning progress events", async () => {
     const reasoningEvents: unknown[] = [];
     const { result } = renderHook(() => useSSE());
 
@@ -131,12 +205,13 @@ describe("useSSE — event handling", () => {
         reasoning_delta: (data) => reasoningEvents.push(data),
       }),
     );
+    await flushTicketRequest();
 
     act(() => MockEventSource.latest.emit("reasoning_delta", { chars: 8 }, "evt-reasoning"));
     expect(reasoningEvents).toEqual([{ chars: 8 }]);
   });
 
-  it("dispatches stream reset events", () => {
+  it("dispatches stream reset events", async () => {
     const resetEvents: unknown[] = [];
     const { result } = renderHook(() => useSSE());
 
@@ -145,6 +220,7 @@ describe("useSSE — event handling", () => {
         stream_reset: (data) => resetEvents.push(data),
       }),
     );
+    await flushTicketRequest();
 
     act(() =>
       MockEventSource.latest.emit(
@@ -156,7 +232,7 @@ describe("useSSE — event handling", () => {
     expect(resetEvents).toEqual([{ reason: "provider_stream_retry" }]);
   });
 
-  it("falls back to message handler for known event types without specific handler", () => {
+  it("falls back to message handler for known event types without specific handler", async () => {
     const messages: unknown[] = [];
     const { result } = renderHook(() => useSSE());
 
@@ -165,6 +241,7 @@ describe("useSSE — event handling", () => {
         message: (data) => messages.push(data),
       }),
     );
+    await flushTicketRequest();
 
     // "text_delta" is a known type the hook subscribes to,
     // but no specific handler → falls back to "message"
@@ -172,7 +249,7 @@ describe("useSSE — event handling", () => {
     expect(messages).toHaveLength(1);
   });
 
-  it("handles malformed JSON gracefully", () => {
+  it("handles malformed JSON gracefully", async () => {
     const messages: unknown[] = [];
     const { result } = renderHook(() => useSSE());
 
@@ -181,6 +258,7 @@ describe("useSSE — event handling", () => {
         text_delta: (data) => messages.push(data),
       }),
     );
+    await flushTicketRequest();
 
     // Emit with raw non-JSON data
     const event = new MessageEvent("text_delta", { data: "not json" });
@@ -194,7 +272,7 @@ describe("useSSE — event handling", () => {
 });
 
 describe("useSSE — deduplication", () => {
-  it("deduplicates events by lastEventId", () => {
+  it("deduplicates events by lastEventId", async () => {
     const messages: unknown[] = [];
     const { result } = renderHook(() => useSSE({ dedupeCapacity: 10 }));
 
@@ -203,6 +281,7 @@ describe("useSSE — deduplication", () => {
         text_delta: (data) => messages.push(data),
       }),
     );
+    await flushTicketRequest();
 
     act(() => MockEventSource.latest.emit("text_delta", { n: 1 }, "dup-1"));
     act(() => MockEventSource.latest.emit("text_delta", { n: 2 }, "dup-1")); // duplicate
@@ -213,7 +292,7 @@ describe("useSSE — deduplication", () => {
     expect(messages[1]).toEqual({ n: 3 });
   });
 
-  it("evicts oldest events when dedup capacity exceeded", () => {
+  it("evicts oldest events when dedup capacity exceeded", async () => {
     const messages: unknown[] = [];
     const { result } = renderHook(() => useSSE({ dedupeCapacity: 3 }));
 
@@ -222,6 +301,7 @@ describe("useSSE — deduplication", () => {
         text_delta: (data) => messages.push(data),
       }),
     );
+    await flushTicketRequest();
 
     // Fill dedup set to capacity (3)
     act(() => MockEventSource.latest.emit("text_delta", { n: 1 }, "a"));
@@ -241,7 +321,7 @@ describe("useSSE — deduplication", () => {
 });
 
 describe("useSSE — exponential backoff", () => {
-  it("schedules reconnect with exponential delay on error", () => {
+  it("schedules reconnect with exponential delay on error", async () => {
     const reconnects: unknown[] = [];
     const { result } = renderHook(() =>
       useSSE({ initialRetryMs: 100, maxRetryMs: 5000, backoffFactor: 2 }),
@@ -252,6 +332,7 @@ describe("useSSE — exponential backoff", () => {
         reconnect: (data) => reconnects.push(data),
       }),
     );
+    await flushTicketRequest();
 
     // Trigger error → should schedule reconnect
     act(() => MockEventSource.latest.onerror?.());
@@ -261,11 +342,13 @@ describe("useSSE — exponential backoff", () => {
     expect(result.current.getStatus()).toBe("reconnecting");
 
     // Advance timer past the delay → should create a new EventSource
-    act(() => vi.advanceTimersByTime(150));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150);
+    });
     expect(MockEventSource.instances.length).toBeGreaterThan(1);
   });
 
-  it("caps retry delay at maxRetryMs", () => {
+  it("caps retry delay at maxRetryMs", async () => {
     const reconnects: unknown[] = [];
     const { result } = renderHook(() =>
       useSSE({ initialRetryMs: 100, maxRetryMs: 200, backoffFactor: 10 }),
@@ -276,12 +359,15 @@ describe("useSSE — exponential backoff", () => {
         reconnect: (data) => reconnects.push(data),
       }),
     );
+    await flushTicketRequest();
 
     act(() => MockEventSource.latest.onerror?.());
     expect((reconnects[0] as any).delayMs).toBe(100);
 
     // Trigger another error on the new source
-    act(() => vi.advanceTimersByTime(200));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
+    });
     act(() => MockEventSource.latest.onerror?.());
     // backoff: 100 * 10^1 = 1000, but capped at 200
     expect((reconnects[1] as any).delayMs).toBe(200);
@@ -289,7 +375,7 @@ describe("useSSE — exponential backoff", () => {
 });
 
 describe("useSSE — Last-Event-ID resume", () => {
-  it("appends Last-Event-ID to reconnect URL", () => {
+  it("appends Last-Event-ID to reconnect URL", async () => {
     const { result } = renderHook(() => useSSE());
 
     act(() =>
@@ -297,13 +383,16 @@ describe("useSSE — Last-Event-ID resume", () => {
         text_delta: () => {},
       }),
     );
+    await flushTicketRequest();
 
     // Emit an event with lastEventId
     act(() => MockEventSource.latest.emit("text_delta", { n: 1 }, "resume-42"));
 
     // Trigger reconnect
     act(() => MockEventSource.latest.onerror?.());
-    act(() => vi.advanceTimersByTime(2000));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
 
     // The new EventSource should have Last-Event-ID in the URL
     const newUrl = MockEventSource.latest.url;

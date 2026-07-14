@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import hmac
 import ipaddress
+import logging
 import os
+import re
+import secrets
+import threading
+import time
 import urllib.parse
+from collections import deque
 from pathlib import Path
-from typing import List, Optional
+from typing import Deque, List, Optional
 
 from fastapi import HTTPException, Query, Request, Security, status
 from fastapi.responses import JSONResponse
@@ -41,6 +47,15 @@ _SHELL_TOOLS_ENV = "VIBE_TRADING_ENABLE_SHELL_TOOLS"
 _DOCKER_LOOPBACK_ENV = "VIBE_TRADING_TRUST_DOCKER_LOOPBACK"
 
 _SAFE_BROWSER_METHODS = {"GET", "HEAD", "OPTIONS"}
+_SSE_TICKET_TTL_SECONDS = 60.0
+# At most 1,024 tickets may be created inside one TTL window. Consumed tickets
+# remain in the expiry queue until their TTL elapses, so mint-and-consume churn
+# cannot grow an unbounded secondary index.
+_MAX_SSE_TICKETS = 1024
+_SSE_TICKETS: dict[str, float] = {}
+_SSE_TICKET_EXPIRIES: Deque[tuple[float, str]] = deque()
+_SSE_TICKETS_LOCK = threading.Lock()
+_QUERY_SECRET_RE = re.compile(r"([?&](?:api_key|ticket|token|access_token)=)[^&#\s\"]*", re.IGNORECASE)
 
 
 # ============================================================================
@@ -118,6 +133,38 @@ async def _reject_untrusted_loopback_host(request: Request, call_next):
     return await call_next(request)
 
 
+async def _add_security_response_headers(request: Request, call_next):
+    """Attach browser-facing response hardening headers."""
+    response = await call_next(request)
+    response.headers.setdefault(
+        "Content-Security-Policy-Report-Only",
+        "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'",
+    )
+    response.headers.setdefault("Permissions-Policy", "camera=(), geolocation=(), microphone=()")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    return response
+
+
+class _UvicornQuerySecretRedactionFilter(logging.Filter):
+    """Remove query-string credentials from Uvicorn access-log arguments."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple):
+            record.args = tuple(
+                _QUERY_SECRET_RE.sub(r"\1[redacted]", value) if isinstance(value, str) else value
+                for value in args
+            )
+        elif isinstance(args, dict):
+            record.args = {
+                key: _QUERY_SECRET_RE.sub(r"\1[redacted]", value) if isinstance(value, str) else value
+                for key, value in args.items()
+            }
+        return True
+
+
 # ============================================================================
 # API Key Authentication
 # ============================================================================
@@ -143,6 +190,43 @@ def _auth_credential_from_header_or_query(
     if allow_query and query_api_key:
         return query_api_key
     return ""
+
+
+def _sweep_expired_sse_tickets(now: float | None = None) -> None:
+    """Remove expired ticket-window entries while the lock is held."""
+    current = time.monotonic() if now is None else now
+    while _SSE_TICKET_EXPIRIES and _SSE_TICKET_EXPIRIES[0][0] <= current:
+        expires_at, ticket = _SSE_TICKET_EXPIRIES.popleft()
+        if _SSE_TICKETS.get(ticket) == expires_at:
+            del _SSE_TICKETS[ticket]
+
+
+class SSETicketCapacityError(RuntimeError):
+    """Raised when the bounded SSE ticket store cannot accept another ticket."""
+
+
+def _mint_sse_ticket() -> str:
+    """Issue a short-lived, single-use EventSource credential."""
+    now = time.monotonic()
+    with _SSE_TICKETS_LOCK:
+        _sweep_expired_sse_tickets(now)
+        if len(_SSE_TICKET_EXPIRIES) >= _MAX_SSE_TICKETS:
+            raise SSETicketCapacityError("SSE ticket capacity reached")
+        ticket = secrets.token_urlsafe(32)
+        expires_at = now + _SSE_TICKET_TTL_SECONDS
+        _SSE_TICKETS[ticket] = expires_at
+        _SSE_TICKET_EXPIRIES.append((expires_at, ticket))
+    return ticket
+
+
+def _consume_sse_ticket(ticket: str) -> bool:
+    """Atomically consume a valid SSE ticket, rejecting replays and expiry."""
+    if not ticket:
+        return False
+    with _SSE_TICKETS_LOCK:
+        _sweep_expired_sse_tickets()
+        expires_at = _SSE_TICKETS.pop(ticket, None)
+        return expires_at is not None and expires_at > time.monotonic()
 
 
 def _is_loopback_origin(origin: str) -> bool:
@@ -321,11 +405,19 @@ async def require_auth(
 
 async def require_event_stream_auth(
     request: Request,
-    api_key: Optional[str] = Query(None),
+    ticket: Optional[str] = Query(None),
     cred: Optional[HTTPAuthorizationCredentials] = Security(_security),
 ) -> None:
-    """Validate auth for browser EventSource streams."""
-    _validate_api_auth(request=request, cred=cred, query_api_key=api_key, allow_query=True)
+    """Validate remote EventSource auth without accepting URL API keys."""
+    if _is_local_client(request):
+        _validate_api_auth(request=request, cred=cred)
+        return
+    if cred and cred.credentials:
+        _validate_api_auth(request=request, cred=cred)
+        return
+    if ticket and _consume_sse_ticket(ticket):
+        return
+    _validate_api_auth(request=request, cred=cred)
 
 
 async def require_local_or_auth(

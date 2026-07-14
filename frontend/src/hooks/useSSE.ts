@@ -3,6 +3,7 @@
  */
 
 import { useCallback, useRef } from "react";
+import { withAuthTicket } from "@/lib/apiAuth";
 
 type EventHandler = (data: Record<string, unknown>) => void;
 type Handlers = Record<string, EventHandler>;
@@ -31,6 +32,7 @@ export function useSSE(config?: SSEConfig) {
   const closedRef = useRef(true);
   const retryCountRef = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connectionGenerationRef = useRef(0);
   const lastEventIdRef = useRef<string | null>(null);
   const statusRef = useRef<SSEStatus>("disconnected");
   const onStatusChangeRef = useRef<((s: SSEStatus) => void) | null>(null);
@@ -66,10 +68,12 @@ export function useSSE(config?: SSEConfig) {
     return baseUrl;
   }, []);
 
-  const doConnect = useCallback(() => {
+  const doConnect = useCallback(async () => {
     if (closedRef.current) return;
 
-    const url = buildUrl(urlRef.current);
+    const generation = connectionGenerationRef.current;
+    const url = await withAuthTicket(buildUrl(urlRef.current));
+    if (closedRef.current || generation !== connectionGenerationRef.current) return;
     const source = new EventSource(url);
     sourceRef.current = source;
 
@@ -131,11 +135,14 @@ export function useSSE(config?: SSEConfig) {
 
     retryTimerRef.current = setTimeout(() => {
       retryTimerRef.current = null;
-      doConnect();
+      void doConnect().catch(() => {
+        if (!closedRef.current) scheduleReconnect();
+      });
     }, delay);
   }, [opts.initialRetryMs, opts.backoffFactor, opts.maxRetryMs, setStatus, doConnect]);
 
   const connect = useCallback((url: string, handlers: Handlers) => {
+    connectionGenerationRef.current += 1;
     closedRef.current = true;
     sourceRef.current?.close();
     if (retryTimerRef.current) {
@@ -151,10 +158,13 @@ export function useSSE(config?: SSEConfig) {
     seenIdsRef.current.clear();
     seenOrderRef.current.length = 0;
 
-    doConnect();
+    void doConnect().catch(() => {
+      if (!closedRef.current) scheduleReconnect();
+    });
   }, [doConnect]);
 
   const disconnect = useCallback(() => {
+    connectionGenerationRef.current += 1;
     closedRef.current = true;
     if (retryTimerRef.current) {
       clearTimeout(retryTimerRef.current);

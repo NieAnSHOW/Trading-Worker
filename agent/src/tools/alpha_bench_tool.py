@@ -14,18 +14,17 @@ Output contract — JSON envelope:
      "top": [{"id": ..., "ic_mean": ..., "ir": ..., ...}, ...]}
 
 Cache integrity note: the universe panel cache lives in ``~/.vibe-trading/cache/``
-as pickle blobs. Each pickle is paired with a ``<name>.sha256`` sidecar; on
-load we recompute the digest and refuse the cache on mismatch. This guards
-against accidental corruption (truncated writes, partial syncs) — it is NOT a
-defence against an attacker with local write access (they can rewrite both
-files). Cache files are user-local; if shared across machines they can be
-tampered with and the sha256 sidecar is only an integrity check, not authenticity.
+as pickle blobs. Each pickle is paired with an HMAC-SHA256 sidecar; on load we
+verify its tag before unpickling. The tag uses ``API_AUTH_KEY`` when configured,
+or a locally generated owner-only key otherwise. A cache that cannot be
+authenticated is treated as a cache miss.
 """
 
 from __future__ import annotations
 
 import hashlib
 import html
+import hmac
 import json
 import logging
 import os
@@ -148,11 +147,45 @@ def _load_universe_panel(
 
 
 def _sha256_path(cache_path: Path) -> Path:
+    """Return the legacy sidecar location, now containing an HMAC-SHA256 tag."""
     return cache_path.with_suffix(cache_path.suffix + ".sha256")
 
 
+def _cache_hmac_key(cache_dir: Path) -> bytes:
+    """Return the configured cache HMAC key or create a local owner-only key."""
+    configured_key = os.getenv("API_AUTH_KEY", "")
+    if configured_key:
+        return configured_key.encode("utf-8")
+
+    key_path = cache_dir / ".hmac_key"
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        try:
+            key = key_path.read_bytes()
+            os.chmod(key_path, 0o600)
+        except OSError as exc:
+            raise RuntimeError(f"cache HMAC key read failed: {exc}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"cache HMAC key creation failed: {exc}") from exc
+    else:
+        key = os.urandom(32)
+        try:
+            with os.fdopen(fd, "wb") as key_file:
+                key_file.write(key)
+                key_file.flush()
+                os.fsync(key_file.fileno())
+        except OSError as exc:
+            raise RuntimeError(f"cache HMAC key write failed: {exc}") from exc
+
+    if len(key) < 16:
+        raise RuntimeError("cache HMAC key is too short")
+    return key
+
+
 def _read_pickle_cache(cache_path: Path) -> dict[str, pd.DataFrame] | None:
-    """Load a pickle cache, validating its sha256 sidecar. None on any failure."""
+    """Load a pickle cache after validating its HMAC sidecar. None on failure."""
     import pickle
 
     sidecar = _sha256_path(cache_path)
@@ -173,7 +206,12 @@ def _read_pickle_cache(cache_path: Path) -> dict[str, pd.DataFrame] | None:
     except OSError as exc:
         logger.warning("cache sidecar read failed (%s); refetching", exc)
         return None
-    actual = hashlib.sha256(blob).hexdigest()
+    try:
+        key = _cache_hmac_key(cache_path.parent)
+    except RuntimeError as exc:
+        logger.warning("cache HMAC key unavailable (%s); refetching", exc)
+        return None
+    actual = hmac.new(key, blob, hashlib.sha256).hexdigest()
     if not _hashes_equal(expected, actual):
         logger.warning(
             "cache integrity mismatch for %s (expected %s..., got %s...); refetching",
@@ -195,7 +233,7 @@ def _read_pickle_cache(cache_path: Path) -> dict[str, pd.DataFrame] | None:
 def _write_pickle_cache(
     cache_dir: Path, cache_path: Path, panel: dict[str, Any]
 ) -> None:
-    """Pickle ``panel`` + write its sha256 sidecar. Failures are non-fatal."""
+    """Pickle ``panel`` + write its HMAC sidecar. Failures are non-fatal."""
     import pickle
 
     try:
@@ -203,16 +241,15 @@ def _write_pickle_cache(
         blob = pickle.dumps(panel, protocol=pickle.HIGHEST_PROTOCOL)
         cache_path.write_bytes(blob)
         _sha256_path(cache_path).write_text(
-            hashlib.sha256(blob).hexdigest(), encoding="utf-8"
+            hmac.new(_cache_hmac_key(cache_dir), blob, hashlib.sha256).hexdigest(),
+            encoding="utf-8",
         )
     except Exception as exc:  # noqa: BLE001 — cache miss is non-fatal
         logger.warning("cache write failed: %s", exc)
 
 
 def _hashes_equal(a: str, b: str) -> bool:
-    """Constant-time comparison of two hex digests."""
-    import hmac
-
+    """Constant-time comparison of two HMAC-SHA256 hex digests."""
     return hmac.compare_digest(a.strip().lower(), b.strip().lower())
 
 

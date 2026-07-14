@@ -27,6 +27,8 @@ export function OptionalDepsManager() {
   const [mirrorSaving, setMirrorSaving] = useState(false);
   const [customUrl, setCustomUrl] = useState("");
   const jobStreams = useRef<Record<string, EventSource>>({});
+  const mountedRef = useRef(true);
+  const subscriptionGenerations = useRef<Record<string, number>>({});
 
   const load = () => {
     Promise.all([api.listOptionalDeps(), api.getOptionalDepsMirror()])
@@ -44,16 +46,19 @@ export function OptionalDepsManager() {
   };
 
   useEffect(() => {
+    mountedRef.current = true;
     load();
     return () => {
+      mountedRef.current = false;
       // 关闭所有未完成的 SSE
       Object.values(jobStreams.current).forEach((es) => es.close());
       jobStreams.current = {};
     };
   }, []);
 
-  const subscribe = (jobId: string, pkg: string) => {
-    const url = api.optionalDepStatusUrl(jobId);
+  const subscribe = async (jobId: string, pkg: string, generation: number) => {
+    const url = await api.optionalDepStatusUrl(jobId);
+    if (!mountedRef.current || subscriptionGenerations.current[pkg] !== generation) return;
     const es = new EventSource(url);
     jobStreams.current[pkg] = es;
 
@@ -101,7 +106,17 @@ export function OptionalDepsManager() {
         [pkg]: { stage: "starting", message: "启动安装…", status: "running" },
       }));
       const { job_id } = await api.installOptionalDep(pkg);
-      subscribe(job_id, pkg);
+      const generation = (subscriptionGenerations.current[pkg] ?? 0) + 1;
+      subscriptionGenerations.current[pkg] = generation;
+      void subscribe(job_id, pkg, generation).catch((err) => {
+        if (!mountedRef.current || subscriptionGenerations.current[pkg] !== generation) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        toast.error(`无法订阅安装状态: ${msg}`);
+        setJobs((prev) => ({
+          ...prev,
+          [pkg]: { stage: "failed", message: msg, status: "failed" },
+        }));
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       toast.error(`无法启动安装: ${msg}`);

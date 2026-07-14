@@ -666,12 +666,14 @@ function BenchView() {
   const [result, setResult] = useState<AlphaBenchResult | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
+  const streamGenerationRef = useRef(0);
   // Track terminal `done` so the synthetic EventSource `error` fired on
   // close doesn't surface as a spurious toast (race between done + error).
   const doneRef = useRef(false);
 
   useEffect(() => {
     return () => {
+      streamGenerationRef.current += 1;
       sourceRef.current?.close();
       sourceRef.current = null;
     };
@@ -685,6 +687,7 @@ function BenchView() {
     setResult(null);
     setFormError(null);
     doneRef.current = false;
+    const streamGeneration = ++streamGenerationRef.current;
     sourceRef.current?.close();
     const safeTop = Number.isFinite(top) && top > 0 ? top : 20;
     try {
@@ -695,7 +698,7 @@ function BenchView() {
         top: safeTop,
       });
       setJobId(res.job_id);
-      attachStream(res.job_id);
+      await attachStream(res.job_id, streamGeneration);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to start bench";
       // BTC-USDT is single-asset — surface inline rather than as a toast,
@@ -712,9 +715,10 @@ function BenchView() {
     }
   };
 
-  const attachStream = (newJobId: string) => {
+  const attachStream = async (newJobId: string, streamGeneration: number) => {
     setStatus("streaming");
-    const url = api.alphaBenchStreamUrl(newJobId);
+    const url = await api.alphaBenchStreamUrl(newJobId);
+    if (streamGeneration !== streamGenerationRef.current) return;
     const source = new EventSource(url);
     sourceRef.current = source;
 
@@ -1143,20 +1147,24 @@ function CompareView() {
   const [result, setResult] = useState<AlphaCompareResult | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
+  const streamGenerationRef = useRef(0);
   const doneRef = useRef(false);
 
   const ids = useMemo(() => parseAlphaIds(idsText), [idsText]);
 
   useEffect(() => {
     return () => {
+      streamGenerationRef.current += 1;
       sourceRef.current?.close();
       sourceRef.current = null;
     };
   }, []);
 
-  const attachStream = (newJobId: string) => {
+  const attachStream = async (newJobId: string, streamGeneration: number) => {
     setStatus("streaming");
-    const source = new EventSource(api.alphaCompareStreamUrl(newJobId));
+    const url = await api.alphaCompareStreamUrl(newJobId);
+    if (streamGeneration !== streamGenerationRef.current) return;
+    const source = new EventSource(url);
     sourceRef.current = source;
 
     source.addEventListener("progress", (e) => {
@@ -1213,6 +1221,7 @@ function CompareView() {
     setResult(null);
     setFormError(null);
     doneRef.current = false;
+    const streamGeneration = ++streamGenerationRef.current;
     sourceRef.current?.close();
     try {
       const res = await api.createAlphaCompare({
@@ -1222,7 +1231,7 @@ function CompareView() {
         sort,
       });
       setJobId(res.job_id);
-      attachStream(res.job_id);
+      await attachStream(res.job_id, streamGeneration);
     } catch (err: unknown) {
       const msg =
         err instanceof Error ? err.message : "Failed to start comparison";

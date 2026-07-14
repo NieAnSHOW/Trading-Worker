@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
+from src.api.helpers import _write_env_text_atomically
 
 # Agent root (agent/) — resolved from this file's location (agent/src/api/).
 _AGENT_DIR = Path(__file__).resolve().parent.parent.parent
@@ -313,16 +314,13 @@ def _llm_env_keys() -> set[str]:
 def _rewrite_env_values(path: Path, updates: Dict[str, str], *, drop_keys: set[str]) -> None:
     """Rewrite active dotenv values, dropping stale keys instead of preserving them."""
     host = _host()
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("# Created by Vibe-Trading Web UI settings.\n", encoding="utf-8")
     current = host._read_env_values(path)
     next_values = {key: value for key, value in current.items() if key not in drop_keys}
     next_values.update(updates)
     lines = ["# Updated from Web UI"]
     for key, value in next_values.items():
         lines.append(f"{key}={host._format_env_value(value)}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _write_env_text_atomically(path, "\n".join(lines) + "\n")
 
 
 # ---------------------------------------------------------------------------

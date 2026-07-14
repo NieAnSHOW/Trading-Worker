@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import os
 import signal
+import threading
 import time
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, Security, status
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Security, status
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
@@ -30,6 +32,24 @@ class HealthResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Process termination
 # ---------------------------------------------------------------------------
+
+_CORRELATION_RATE_LIMIT = 10
+_CORRELATION_RATE_WINDOW_SECONDS = 60.0
+_correlation_request_times: dict[str, deque[float]] = defaultdict(deque)
+_correlation_rate_lock = threading.Lock()
+
+
+def _enforce_correlation_rate_limit(request: Request) -> None:
+    """Limit expensive correlation requests per client address."""
+    client = request.client.host if request.client else "unknown"
+    now = time.monotonic()
+    with _correlation_rate_lock:
+        requests = _correlation_request_times[client]
+        while requests and requests[0] <= now - _CORRELATION_RATE_WINDOW_SECONDS:
+            requests.popleft()
+        if len(requests) >= _CORRELATION_RATE_LIMIT:
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many correlation requests")
+        requests.append(now)
 
 
 def _terminate_current_process() -> None:
@@ -64,6 +84,7 @@ def register_system_routes(
         )
 
     _security = host._security
+    _require_auth = host.require_auth
     _require_shutdown_authorization = host._require_shutdown_authorization
     _app_version = app_version if app_version is not None else host.APP_VERSION
 
@@ -87,8 +108,9 @@ def register_system_routes(
             timestamp=datetime.now(timezone.utc).isoformat()
         )
 
-    @app.get("/correlation")
+    @app.get("/correlation", dependencies=[Depends(_require_auth)])
     async def get_correlation_matrix(
+        request: Request,
         codes: str = Query(..., description="Comma-separated asset codes, e.g. BTC-USDT,ETH-USDT,SPY"),
         days: int = Query(90, description="Lookback window in days", ge=7, le=365),
         method: str = Query("pearson", description="Correlation method: pearson or spearman"),
@@ -98,6 +120,7 @@ def register_system_routes(
         Fetches price data for each code via available data loaders,
         computes pairwise correlation of daily returns over the lookback window.
         """
+        _enforce_correlation_rate_limit(request)
         from backtest.correlation import compute_correlation_matrix
 
         code_list = [c.strip() for c in codes.split(",") if c.strip()]
@@ -114,7 +137,7 @@ def register_system_routes(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Correlation computation failed: {exc}")
+            raise HTTPException(status_code=500, detail="Correlation computation failed") from exc
 
     @app.post("/system/shutdown")
     async def shutdown_local_api(
