@@ -13,6 +13,8 @@ import type { DashboardIndex, MarketPulseItem, DashboardQuote, DashboardMarketSn
 export interface MarketDashboardState {
   indexes: DashboardIndex[];
   pulse: MarketPulseItem[];
+  pulseAsOf: string | null;
+  pulseStale: boolean;
   quotes: Record<string, DashboardQuote>;
   selectedCode: string | null;
   selectedBars: PriceBar[];
@@ -50,6 +52,8 @@ const POLL_INTERVAL = 15000;
 export const useMarketDashboardStore = create<MarketDashboardState>((set, get) => ({
   indexes: [],
   pulse: [],
+  pulseAsOf: null,
+  pulseStale: false,
   quotes: {},
   selectedCode: null,
   selectedBars: [],
@@ -82,9 +86,21 @@ export const useMarketDashboardStore = create<MarketDashboardState>((set, get) =
     set({ pulseLoading: true });
     try {
       const result = await fetchMarketPulse();
-      set({ pulse: result.data, pulseError: null });
+      if (result.stale || result.error) {
+        set({ pulseError: result.error ?? "pulse failed", pulseStale: true });
+        return;
+      }
+      set({
+        pulse: result.data,
+        pulseAsOf: result.asOf,
+        pulseStale: false,
+        pulseError: null,
+      });
     } catch (error) {
-      set({ pulseError: (error as Error)?.message ?? "pulse failed" });
+      set({
+        pulseError: (error as Error)?.message ?? "pulse failed",
+        pulseStale: true,
+      });
     } finally {
       set({ pulseLoading: false });
     }
@@ -93,14 +109,12 @@ export const useMarketDashboardStore = create<MarketDashboardState>((set, get) =
   refreshMarketData: async () => {
     set({
       indexesLoading: true,
-      pulseLoading: true,
       quotesLoading: true,
       marketSnapshotLoading: true,
     });
 
-    const [indexesResult, , stocksResult, marketSnapshotResult] = await Promise.allSettled([
+    const [indexesResult, stocksResult, marketSnapshotResult] = await Promise.allSettled([
       fetchDashboardIndexes(),
-      get().refreshPulse(),
       fetchWatchlistStocks(),
       fetchDashboardMarketSnapshot(),
     ]);
@@ -141,7 +155,6 @@ export const useMarketDashboardStore = create<MarketDashboardState>((set, get) =
 
     set({
       indexesLoading: false,
-      pulseLoading: false,
       quotesLoading: false,
       marketSnapshotLoading: false,
     });

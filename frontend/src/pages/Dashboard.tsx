@@ -1,11 +1,6 @@
-import { useEffect, useState, useMemo, type ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  RefreshCw,
-  AlertCircle,
-  ChevronLeft,
-  ChevronRight,
-} from "lucide-react";
+import { RefreshCw, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useMarketDashboardStore } from "@/stores/marketDashboard";
 import type {
@@ -13,7 +8,6 @@ import type {
   DashboardMarketSnapshot,
   DashboardMarketEmotion,
   DashboardSnapshotArea,
-  MarketPulseItem,
   DashboardConceptHeat,
   DashboardStockRankRow,
 } from "@/lib/stockSdk";
@@ -123,151 +117,6 @@ function IndexStrip({ indexes }: { indexes: DashboardIndex[] }) {
           </div>
         );
       })}
-    </div>
-  );
-}
-
-const PULSE_PAGE_SIZES = [200, 500, 1000] as const;
-
-export function MarketPulseSection({
-  items,
-  loading,
-  error,
-}: {
-  items: MarketPulseItem[];
-  loading: boolean;
-  error: string | null;
-}) {
-  const { t } = useTranslation();
-  const [page, setPage] = useState(0);
-  const [pageSize, setPageSize] =
-    useState<(typeof PULSE_PAGE_SIZES)[number]>(200);
-
-  // Reset to first page when data refreshes
-  useEffect(() => {
-    setPage(0);
-  }, [items.length]);
-
-  const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
-  const safePage = Math.min(page, totalPages - 1);
-  const pageItems = useMemo(
-    () => items.slice(safePage * pageSize, (safePage + 1) * pageSize),
-    [items, safePage, pageSize],
-  );
-
-  if (loading && items.length === 0) {
-    return (
-      <div className="rounded-lg border p-4 space-y-3 bg-card">
-        <h2 className="text-sm font-semibold">{t("dashboard.marketPulse")}</h2>
-        <p className="text-xs text-muted-foreground">
-          {t("dashboard.loading")}
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      data-testid="market-pulse-card"
-      className="h-full rounded-lg border p-4 space-y-3 bg-card"
-    >
-      <h2 className="text-sm font-semibold">{t("dashboard.marketPulse")}</h2>
-      {error && items.length === 0 && (
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <AlertCircle className="h-3 w-3" />
-          {error}
-        </div>
-      )}
-      {items.length === 0 && !error && (
-        <p className="text-xs text-muted-foreground">
-          {t("dashboard.noPulse")}
-        </p>
-      )}
-      {items.length > 0 && (
-        <>
-          <ul className="space-y-1.5">
-            {pageItems.map((item, i) => (
-              <li
-                key={`${item.code}-${safePage * pageSize + i}`}
-                className="text-xs border-b border-border/50 pb-1.5 last:border-0"
-              >
-                <div className="flex items-center gap-1.5">
-                  <span className="font-medium">{item.name}</span>
-                  <span className="text-muted-foreground">{item.code}</span>
-                  <span
-                    className={cn(
-                      "px-1 py-0.5 rounded text-[10px] font-medium",
-                      item.changeType.includes("涨")
-                        ? "bg-red-500/10 text-red-500"
-                        : "bg-green-500/10 text-green-500",
-                    )}
-                  >
-                    {item.changeType}
-                  </span>
-                </div>
-                {item.info && (
-                  <p className="text-muted-foreground mt-0.5">{item.info}</p>
-                )}
-                <span className="text-muted-foreground/60 text-[10px]">
-                  {item.time}
-                </span>
-              </li>
-            ))}
-          </ul>
-          <div className="flex items-center justify-between pt-1 border-t border-border/50">
-            <span className="text-[10px] text-muted-foreground">
-              {t("dashboard.pulseRange", {
-                from: safePage * pageSize + 1,
-                to: Math.min((safePage + 1) * pageSize, items.length),
-                total: items.length,
-              })}
-            </span>
-            <div className="flex items-center gap-1">
-              <div className="flex items-center gap-0.5 mr-1">
-                {PULSE_PAGE_SIZES.map((size) => (
-                  <button
-                    key={size}
-                    type="button"
-                    onClick={() => {
-                      setPageSize(size);
-                      setPage(0);
-                    }}
-                    className={cn(
-                      "px-1.5 py-0.5 rounded text-[10px] transition-colors",
-                      pageSize === size
-                        ? "bg-primary text-primary-foreground"
-                        : "text-muted-foreground hover:bg-muted",
-                    )}
-                  >
-                    {size}
-                  </button>
-                ))}
-              </div>
-              <button
-                type="button"
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
-                disabled={safePage === 0}
-                className="p-0.5 rounded hover:bg-muted transition-colors disabled:opacity-30"
-                aria-label={t("dashboard.prevPage")}
-              >
-                <ChevronLeft className="h-3.5 w-3.5" />
-              </button>
-              <span className="text-[10px] text-muted-foreground min-w-[3rem] text-center">
-                {safePage + 1} / {totalPages}
-              </span>
-              <button
-                type="button"
-                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-                disabled={safePage >= totalPages - 1}
-                className="p-0.5 rounded hover:bg-muted transition-colors disabled:opacity-30"
-                aria-label={t("dashboard.nextPage")}
-              >
-                <ChevronRight className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          </div>
-        </>
-      )}
     </div>
   );
 }

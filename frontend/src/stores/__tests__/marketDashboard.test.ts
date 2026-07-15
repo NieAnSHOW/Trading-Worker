@@ -52,6 +52,8 @@ const MARKET_SNAPSHOT = {
 const defaultState = {
   indexes: [],
   pulse: [],
+  pulseAsOf: null as string | null,
+  pulseStale: false,
   quotes: {} as Record<string, unknown>,
   selectedCode: null as string | null,
   selectedBars: [],
@@ -88,6 +90,8 @@ describe("useMarketDashboardStore", () => {
       const s = useMarketDashboardStore.getState();
       expect(s.indexes).toEqual([]);
       expect(s.pulse).toEqual([]);
+      expect(s.pulseAsOf).toBeNull();
+      expect(s.pulseStale).toBe(false);
       expect(s.quotes).toEqual({});
       expect(s.selectedCode).toBeNull();
       expect(s.selectedBars).toEqual([]);
@@ -133,20 +137,41 @@ describe("useMarketDashboardStore", () => {
       expect(mockFetchWatchlist).not.toHaveBeenCalled();
       expect(mockFetchMarketSnapshot).not.toHaveBeenCalled();
       expect(state.pulse).toEqual(pulse);
+      expect(state.pulseAsOf).toBe("2026-07-13T10:00:00Z");
+      expect(state.pulseStale).toBe(false);
       expect(state.pulseLoading).toBe(false);
       expect(state.pulseError).toBeNull();
+    });
+
+    it("retains the last successful pulse list when the provider returns a stale error", async () => {
+      const current = [{
+        code: "600519", name: "贵州茅台", time: "10:00", changeType: "涨停",
+        info: "白酒板块走强", source: "test", stale: false,
+      }];
+      useMarketDashboardStore.setState({
+        pulse: current as never,
+        pulseAsOf: "2026-07-15T09:30:00Z",
+      });
+      mockFetchPulse.mockResolvedValue({
+        data: [], asOf: "2026-07-15T09:45:00Z", stale: true,
+        error: "pulse unavailable",
+      });
+
+      await useMarketDashboardStore.getState().refreshPulse();
+
+      expect(useMarketDashboardStore.getState()).toMatchObject({
+        pulse: current,
+        pulseAsOf: "2026-07-15T09:30:00Z",
+        pulseStale: true,
+        pulseError: "pulse unavailable",
+      });
     });
   });
 
   describe("refreshMarketData", () => {
-    it("updates indexes, pulse, quotes on success", async () => {
+    it("updates indexes and quotes on success", async () => {
       mockFetchIndexes.mockResolvedValue({
         data: [{ code: "000001", name: "上证指数", price: 3000, changePct: 0.5, changeAmt: 15, source: "test", stale: false }],
-        asOf: "2026-07-13T10:00:00Z",
-        stale: false,
-      });
-      mockFetchPulse.mockResolvedValue({
-        data: [{ code: "600519", name: "贵州茅台", time: "10:00", changeType: "涨停", info: "test", source: "test", stale: false }],
         asOf: "2026-07-13T10:00:00Z",
         stale: false,
       });
@@ -163,11 +188,14 @@ describe("useMarketDashboardStore", () => {
 
       const s = useMarketDashboardStore.getState();
       expect(s.indexes).toHaveLength(1);
-      expect(s.pulse).toHaveLength(1);
       expect(Object.keys(s.quotes)).toHaveLength(1);
       expect(s.indexesError).toBeNull();
-      expect(s.pulseError).toBeNull();
       expect(s.quotesError).toBeNull();
+    });
+
+    it("does not request Market Pulse from dashboard market-data refresh", async () => {
+      await useMarketDashboardStore.getState().refreshMarketData();
+      expect(mockFetchPulse).not.toHaveBeenCalled();
     });
 
     it("keeps the market snapshot available while reporting a stale concept area", async () => {
