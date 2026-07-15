@@ -13,7 +13,7 @@ import {
 } from "./marketPulse";
 
 const POLL_INTERVAL = 15_000;
-const PAGE_SIZES = [20, 50, 100] as const;
+const PAGE_SIZES = [200, 500, 1000] as const;
 
 const categoryLabels: Record<MarketPulseCategory, string> = {
   all: "全部",
@@ -50,7 +50,7 @@ export function MarketPulsePanel() {
   const [hideStale, setHideStale] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [page, setPage] = useState(0);
-  const [pageSize, setPageSize] = useState<(typeof PAGE_SIZES)[number]>(20);
+  const [pageSize, setPageSize] = useState<(typeof PAGE_SIZES)[number]>(200);
 
   useEffect(() => {
     const refreshWhenVisible = () => {
@@ -153,7 +153,11 @@ export function MarketPulsePanel() {
         <SummaryCard label={t("marketPulse.total", "异动总数")} value={counts.all} />
         <SummaryCard label={t("marketPulse.limitUp", "涨停异动")} value={counts.limitUp} tone="text-red-500" />
         <SummaryCard label={t("marketPulse.upward", "上涨异动")} value={counts.upward} tone="text-red-500" />
-        <SummaryCard label={t("marketPulse.downward", "下跌异动")} value={counts.downward} tone="text-green-500" />
+        <SummaryCard
+          label={t("marketPulse.limitDownBroken", "跌停/炸板")}
+          value={counts.downward + counts.limitDownBroken}
+          tone="text-green-500"
+        />
       </section>
 
       <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(15rem,0.36fr)_minmax(0,1fr)] lg:gap-3">

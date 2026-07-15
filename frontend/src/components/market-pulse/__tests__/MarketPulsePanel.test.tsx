@@ -49,6 +49,24 @@ const upwardItem: MarketPulseItem = {
   stale: false,
 };
 
+const downwardItem: MarketPulseItem = {
+  ...upwardItem,
+  code: "600000",
+  name: "浦发银行",
+  time: "10:02",
+  changeType: "高台跳水",
+  info: "卖盘活跃",
+};
+
+const limitDownBrokenItem: MarketPulseItem = {
+  ...upwardItem,
+  code: "600001",
+  name: "邯郸钢铁",
+  time: "10:03",
+  changeType: "打开涨停板",
+  info: "封板打开",
+};
+
 function renderPanel(overrides: Partial<typeof storeState> = {}) {
   Object.assign(storeState, overrides);
   return render(<MarketPulsePanel />);
@@ -71,15 +89,51 @@ describe("MarketPulsePanel", () => {
     });
   });
 
-  it("filters by category and updates selected-event detail", async () => {
+  it("selects the first matching event detail when a category filter changes", async () => {
     const user = userEvent.setup();
     renderPanel({ pulse: [limitUpItem, upwardItem] });
 
+    expect(await screen.findByRole("heading", { name: /贵州茅台/i })).toBeInTheDocument();
+
     await user.click(screen.getByRole("button", { name: /上涨异动/i }));
 
-    expect(screen.getByRole("button", { name: /平安银行 000001/i })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /贵州茅台 600519/i })).toBeNull();
     expect(await screen.findByRole("heading", { name: /平安银行/i })).toBeInTheDocument();
+  });
+
+  it("updates selected-event detail when a different list row is selected", async () => {
+    const user = userEvent.setup();
+    renderPanel({ pulse: [limitUpItem, upwardItem] });
+
+    await user.click(screen.getByRole("button", { name: /平安银行 000001/i }));
+
+    expect(await screen.findByRole("heading", { name: /平安银行/i })).toBeInTheDocument();
+  });
+
+  it("uses the approved page size default and paginates the final event", async () => {
+    const user = userEvent.setup();
+    const paginatedItems = Array.from({ length: 201 }, (_, index) => ({
+      ...upwardItem,
+      code: String(index).padStart(6, "0"),
+      name: `测试股票${index + 1}`,
+      time: `10:${String(index % 60).padStart(2, "0")}`,
+    }));
+    renderPanel({ pulse: paginatedItems });
+
+    const pageSize = screen.getByLabelText("每页数量");
+    expect(pageSize).toHaveValue("200");
+    expect(Array.from(pageSize.querySelectorAll("option"), ({ value }) => value)).toEqual(["200", "500", "1000"]);
+
+    await user.click(screen.getByRole("button", { name: /下一页/i }));
+
+    expect(screen.getByText("2 / 2")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /测试股票201 000200/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /下一页/i })).toBeDisabled();
+  });
+
+  it("combines downward and limit-down-broken events in the decline summary", () => {
+    renderPanel({ pulse: [downwardItem, limitDownBrokenItem] });
+
+    expect(screen.getByText("跌停/炸板").parentElement).toHaveTextContent("2");
   });
 
   it("keeps active filters after manual refresh", async () => {
