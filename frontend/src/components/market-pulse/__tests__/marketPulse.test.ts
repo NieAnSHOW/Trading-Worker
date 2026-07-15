@@ -70,6 +70,12 @@ describe("market pulse helpers", () => {
     expect(getPulsePage([], -1, 20)).toEqual({ items: [], page: 0, totalPages: 1 });
   });
 
+  it("falls back to a page size of one when a fractional size rounds down to zero", () => {
+    const entries = [item("火箭发射", { code: "000001" })];
+
+    expect(getPulsePage(entries, 0, 0.5)).toEqual({ items: entries, page: 0, totalPages: 1 });
+  });
+
   it("builds a key from item identity fields and its list index", () => {
     expect(pulseItemKey(item("火箭发射"), 3)).toBe("600519-10:00-火箭发射-3");
   });

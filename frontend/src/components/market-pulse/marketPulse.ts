@@ -75,7 +75,8 @@ export interface PulsePage {
 }
 
 export function getPulsePage(items: readonly MarketPulseItem[], page: number, pageSize: number): PulsePage {
-  const safePageSize = Number.isFinite(pageSize) && pageSize > 0 ? Math.floor(pageSize) : 1;
+  const normalizedPageSize = Math.floor(pageSize);
+  const safePageSize = Number.isFinite(normalizedPageSize) && normalizedPageSize > 0 ? normalizedPageSize : 1;
   const totalPages = Math.max(1, Math.ceil(items.length / safePageSize));
   const safePage = Math.min(Math.max(0, Number.isFinite(page) ? Math.floor(page) : 0), totalPages - 1);
   const start = safePage * safePageSize;
