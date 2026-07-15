@@ -116,7 +116,7 @@ export function MarketPulsePanel() {
     <div className="flex h-full w-full flex-col gap-3 p-3 lg:gap-3 lg:p-5">
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0 space-y-1">
-          <h1 className="text-xl font-bold tracking-tight">
+          <h1 className="text-xl font-bold">
             {t("marketPulse.title", "市场异动")}
           </h1>
           <p className="text-sm text-muted-foreground">
