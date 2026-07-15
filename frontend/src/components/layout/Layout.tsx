@@ -293,6 +293,7 @@ export function Layout() {
 
           <NavLink to="/" icon={BarChart3} label={t("layout.home")} collapsed={collapsed} isActive={isActive("/")} />
           <NavLink to="/dashboard" icon={LayoutDashboard} label={t("layout.dashboard")} collapsed={collapsed} isActive={isActive("/dashboard")} />
+          <NavLink to="/market-pulse" icon={Activity} label={t("layout.marketPulse")} collapsed={collapsed} isActive={isActive("/market-pulse")} />
           <NavLink to="/indices" icon={LineChart} label={t("layout.indices", "指数")} collapsed={collapsed} isActive={isActive("/indices")} />
           <NavLink to="/agent" icon={Bot} label={t("layout.agent")} collapsed={collapsed} isActive={isActive("/agent")} />
           <NavLink to="/watchlist" icon={Eye} label={t("layout.watchlist")} collapsed={collapsed} isActive={isActive("/watchlist")} />

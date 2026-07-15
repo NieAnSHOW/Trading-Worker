@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import {
@@ -8,8 +8,6 @@ import {
   Send,
   RefreshCw,
   CandlestickChart as CandlestickIcon,
-  ChevronLeft,
-  ChevronRight,
   TrendingUp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -18,7 +16,6 @@ import { useMarketDashboardStore } from "@/stores/marketDashboard";
 import { CandlestickChart as CandlestickChartView } from "@/components/charts/CandlestickChart";
 import type { PriceBar, QuoteData } from "@/lib/api";
 import { toast } from "sonner";
-import type { MarketPulseItem } from "@/lib/stockSdk";
 
 /** A 股代码：6 位数字 */
 const A_STOCK_RE = /^\d{6}$/;
@@ -54,31 +51,6 @@ function fmtAmt(v: number | null | undefined): string {
   if (v == null) return "—";
   const sign = v > 0 ? "+" : "";
   return `${sign}${v.toFixed(2)}`;
-}
-
-const PULSE_PAGE_SIZES = [200, 500, 1000] as const;
-
-function MarketPulseSection({ items, loading, error }: { items: MarketPulseItem[]; loading: boolean; error: string | null }) {
-  const { t } = useTranslation();
-  const [page, setPage] = useState(0);
-  const [pageSize, setPageSize] = useState<(typeof PULSE_PAGE_SIZES)[number]>(200);
-  useEffect(() => setPage(0), [items.length]);
-  const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
-  const safePage = Math.min(page, totalPages - 1);
-  const pageItems = useMemo(() => items.slice(safePage * pageSize, (safePage + 1) * pageSize), [items, safePage, pageSize]);
-
-  return (
-    <div data-testid="market-pulse-card" className="rounded-lg border bg-card p-4 space-y-3">
-      <h2 className="text-sm font-semibold">{t("dashboard.marketPulse")}</h2>
-      {loading && items.length === 0 && <p className="text-xs text-muted-foreground">{t("dashboard.loading")}</p>}
-      {error && items.length === 0 && <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><AlertCircle className="h-3 w-3" />{error}</div>}
-      {items.length === 0 && !loading && !error && <p className="text-xs text-muted-foreground">{t("dashboard.noPulse")}</p>}
-      {items.length > 0 && <>
-        <ul className="space-y-1.5">{pageItems.map((item, index) => <li key={`${item.code}-${safePage * pageSize + index}`} className="border-b border-border/50 pb-1.5 text-xs last:border-0"><div className="flex items-center gap-1.5"><span className="font-medium">{item.name}</span><span className="text-muted-foreground">{item.code}</span><span className={cn("rounded px-1 py-0.5 text-[10px] font-medium", item.changeType.includes("涨") ? "bg-red-500/10 text-red-500" : "bg-green-500/10 text-green-500")}>{item.changeType}</span></div>{item.info && <p className="mt-0.5 text-muted-foreground">{item.info}</p>}<span className="text-[10px] text-muted-foreground/60">{item.time}</span></li>)}</ul>
-        <div className="flex items-center justify-between border-t border-border/50 pt-1"><span className="text-[10px] text-muted-foreground">{t("dashboard.pulseRange", { from: safePage * pageSize + 1, to: Math.min((safePage + 1) * pageSize, items.length), total: items.length })}</span><div className="flex items-center gap-1"><div className="mr-1 flex items-center gap-0.5">{PULSE_PAGE_SIZES.map((size) => <button key={size} type="button" onClick={() => { setPageSize(size); setPage(0); }} className={cn("rounded px-1.5 py-0.5 text-[10px] transition-colors", pageSize === size ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted")}>{size}</button>)}</div><button type="button" onClick={() => setPage((value) => Math.max(0, value - 1))} disabled={safePage === 0} className="rounded p-0.5 hover:bg-muted disabled:opacity-30" aria-label={t("dashboard.prevPage")}><ChevronLeft className="h-3.5 w-3.5" /></button><span className="min-w-[3rem] text-center text-[10px] text-muted-foreground">{safePage + 1} / {totalPages}</span><button type="button" onClick={() => setPage((value) => Math.min(totalPages - 1, value + 1))} disabled={safePage >= totalPages - 1} className="rounded p-0.5 hover:bg-muted disabled:opacity-30" aria-label={t("dashboard.nextPage")}><ChevronRight className="h-3.5 w-3.5" /></button></div></div>
-      </>}
-    </div>
-  );
 }
 
 /** 表头行：真实表与骨架表共用，保证列宽一致 */
@@ -225,10 +197,6 @@ export default function WatchlistPage() {
   const barsLoading = useMarketDashboardStore((s) => s.barsLoading);
   const barsError = useMarketDashboardStore((s) => s.barsError);
   const setSelectedCode = useMarketDashboardStore((s) => s.setSelectedCode);
-  const pulse = useMarketDashboardStore((s) => s.pulse);
-  const pulseLoading = useMarketDashboardStore((s) => s.pulseLoading);
-  const pulseError = useMarketDashboardStore((s) => s.pulseError);
-  const refreshPulse = useMarketDashboardStore((s) => s.refreshPulse);
   const activeSelectedCode = selectedCode && stocks.some((stock) => stock.code === selectedCode)
     ? selectedCode
     : null;
@@ -237,19 +205,6 @@ export default function WatchlistPage() {
   useEffect(() => {
     refresh();
   }, [refresh]);
-
-  useEffect(() => {
-    const refreshWhenVisible = () => {
-      if (!document.hidden) void refreshPulse();
-    };
-    refreshWhenVisible();
-    const timerId = window.setInterval(refreshWhenVisible, 15_000);
-    document.addEventListener("visibilitychange", refreshWhenVisible);
-    return () => {
-      window.clearInterval(timerId);
-      document.removeEventListener("visibilitychange", refreshWhenVisible);
-    };
-  }, [refreshPulse]);
 
   // 行情轮询：3s，Page Visibility API 暂停/恢复
   useEffect(() => {
@@ -565,9 +520,6 @@ export default function WatchlistPage() {
           </aside>
         </div>
       )}
-      <section data-testid="watchlist-market-pulse" className="w-full">
-        <MarketPulseSection items={pulse} loading={pulseLoading} error={pulseError} />
-      </section>
     </div>
   );
 }

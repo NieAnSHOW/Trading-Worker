@@ -53,10 +53,6 @@ function baseMarketStore(overrides: Record<string, unknown> = {}) {
     barsLoading: false,
     barsError: null,
     setSelectedCode: vi.fn(),
-    pulse: [],
-    pulseLoading: false,
-    pulseError: null,
-    refreshPulse: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -84,20 +80,13 @@ describe("WatchlistPage — empty state", () => {
     expect(screen.getByText(/暂无自选股|No stocks yet/i)).toBeTruthy();
   });
 
-  it("renders Market Pulse with no saved stocks", () => {
-    renderPage({}, {
-      pulse: [{ code: "600519", name: "贵州茅台", time: "10:00", changeType: "涨停", info: "白酒板块走强", source: "test", stale: false }],
-    });
-
-    expect(screen.getByTestId("watchlist-market-pulse")).toHaveClass("w-full");
-    expect(screen.getByTestId("market-pulse-card")).toHaveTextContent("涨停");
-  });
-
-  it("refreshes Market Pulse when Watchlist mounts", () => {
+  it("does not render or refresh Market Pulse", () => {
     const refreshPulse = vi.fn().mockResolvedValue(undefined);
     renderPage({}, { refreshPulse });
 
-    expect(refreshPulse).toHaveBeenCalledOnce();
+    expect(screen.queryByTestId("watchlist-market-pulse")).toBeNull();
+    expect(screen.queryByTestId("market-pulse-card")).toBeNull();
+    expect(refreshPulse).not.toHaveBeenCalled();
   });
 });
 

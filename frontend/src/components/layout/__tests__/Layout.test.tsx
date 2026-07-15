@@ -40,6 +40,28 @@ describe("Layout sidebar", () => {
     expect(screen.getByText("Dashboard route content")).toBeInTheDocument();
   });
 
+  it("places Market Pulse directly after Dashboard and before Indices", () => {
+    renderLayout();
+
+    const dashboard = screen.getByRole("link", { name: /市场看板/i });
+    const marketPulse = screen.getByRole("link", { name: /市场异动/i });
+    const indices = screen.getByRole("link", { name: /指数/i });
+
+    expect(marketPulse).toHaveAttribute("href", "/market-pulse");
+    expect(
+      Boolean(
+        dashboard.compareDocumentPosition(marketPulse) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+    ).toBe(true);
+    expect(
+      Boolean(
+        marketPulse.compareDocumentPosition(indices) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+    ).toBe(true);
+  });
+
   it("keeps the main area constrained", () => {
     const { container } = renderLayout();
 

@@ -49,10 +49,6 @@ function renderWatchlistWithAgent(
     barsLoading: false,
     barsError: null,
     setSelectedCode: vi.fn(),
-    pulse: [],
-    pulseLoading: false,
-    pulseError: null,
-    refreshPulse: vi.fn().mockResolvedValue(undefined),
     ...marketState,
   } as never));
   mockStore.mockReturnValue({
