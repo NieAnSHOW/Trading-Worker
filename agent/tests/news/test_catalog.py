@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +16,17 @@ ROOT = Path(__file__).resolve().parents[3]
 NEWS_DIR = ROOT / "agent" / "src" / "news"
 IMPORTER = ROOT / "scripts" / "news" / "import_upstream.py"
 GOLDEN_MANIFEST_SHA256 = "5471c28bd8ad6fe13af7a6d335073fb8dad90ddb316269e092071412c9d8d3f6"
+STATIC_ARTIFACTS = (
+    "upstream_manifest.json",
+    "upstream_manifest.sha256",
+    "THIRD_PARTY_NOTICES.md",
+)
+
+
+def _assert_generated_artifacts_match_tracked(output_dir: Path) -> None:
+    assert tuple(sorted(path.name for path in output_dir.iterdir() if path.is_file())) == tuple(sorted(STATIC_ARTIFACTS))
+    for artifact in STATIC_ARTIFACTS:
+        assert (output_dir / artifact).read_bytes() == (NEWS_DIR / artifact).read_bytes()
 
 
 def test_catalog_matches_the_pinned_upstream_contract() -> None:
@@ -34,6 +46,7 @@ def test_endpoint_grouping_is_deterministic_and_preserves_shared_feeds() -> None
     endpoints = group_endpoints(load_catalog())
 
     assert len(endpoints) == 106
+    assert len({item.id for item in endpoints}) == 106
     assert tuple(item.url for item in endpoints) == tuple(sorted(item.url for item in endpoints))
     assert all(item.id == hashlib.sha256(item.url.encode("utf-8")).hexdigest()[:16] for item in endpoints)
     assert all(
@@ -91,9 +104,26 @@ def test_importer_reads_git_objects_not_dirty_worktree(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    sources = json.loads((output / "upstream_manifest.json").read_text(encoding="utf-8"))["sources"]
-    assert sources
-    assert sources[0]["name"] == "OpenAI"
+    _assert_generated_artifacts_match_tracked(output)
+
+    faulty_output = tmp_path / "missing-artifact-output"
+    shutil.copytree(output, faulty_output)
+    (faulty_output / "upstream_manifest.json").unlink()
+    with pytest.raises(AssertionError):
+        _assert_generated_artifacts_match_tracked(faulty_output)
+
+    faulty_output = tmp_path / "corrupt-hash-output"
+    shutil.copytree(output, faulty_output)
+    (faulty_output / "upstream_manifest.sha256").write_text("corrupt\n", encoding="utf-8")
+    with pytest.raises(AssertionError):
+        _assert_generated_artifacts_match_tracked(faulty_output)
+
+    faulty_output = tmp_path / "truncated-notice-output"
+    shutil.copytree(output, faulty_output)
+    notice = faulty_output / "THIRD_PARTY_NOTICES.md"
+    notice.write_bytes(notice.read_bytes()[:-1])
+    with pytest.raises(AssertionError):
+        _assert_generated_artifacts_match_tracked(faulty_output)
 
 
 def test_importer_rejects_any_commit_other_than_the_fixed_pin(tmp_path: Path) -> None:
