@@ -320,6 +320,15 @@ def _reject_untrusted_browser_write(request: Request) -> None:
         _reject_cross_site_browser_request(request)
 
 
+async def _reject_untrusted_browser_write_middleware(request: Request, call_next):
+    """Enforce the unsafe-request Origin guard before every route handler."""
+    try:
+        _reject_untrusted_browser_write(request)
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers)
+    return await call_next(request)
+
+
 def _require_shutdown_authorization(
     *,
     request: Request,

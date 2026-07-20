@@ -59,6 +59,7 @@ from src.api.security import (  # noqa: F401, E402
     _parse_cors_origins,
     _parse_extra_loopback_hosts,
     _reject_cross_site_browser_request,
+    _reject_untrusted_browser_write_middleware,
     _reject_untrusted_loopback_host,
     _require_shutdown_authorization,
     _mint_sse_ticket,
@@ -199,6 +200,7 @@ app.add_middleware(
 # the @app.middleware("http") decorator cannot be used here — register them
 # programmatically instead.
 app.middleware("http")(_reject_untrusted_loopback_host)
+app.middleware("http")(_reject_untrusted_browser_write_middleware)
 app.middleware("http")(_spa_html_deep_link_fallback)
 app.middleware("http")(_add_security_response_headers)
 

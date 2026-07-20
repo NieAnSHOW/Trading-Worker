@@ -247,6 +247,81 @@ def test_unconfigured_loopback_origin_cannot_start_news_refresh(monkeypatch: pyt
     assert start_calls == []
 
 
+def test_unconfigured_loopback_origin_cannot_write_watchlist_before_persistence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All unsafe routes reject an untrusted Origin before write handlers run."""
+    from src.api import watchlist_routes
+
+    writes: list[str] = []
+
+    class ConnectionSpy:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def execute(self, statement: str, params: tuple[str, str]):
+            writes.append(statement)
+
+        def commit(self) -> None:
+            return None
+
+    monkeypatch.setattr(watchlist_routes, "_get_connection", ConnectionSpy)
+
+    response = _local_client().post(
+        "/watchlist/stocks",
+        headers={"Host": "127.0.0.1:8899", "Origin": "http://127.0.0.1:45678"},
+        json={"code": "000001"},
+    )
+
+    assert response.status_code == 403
+    assert writes == []
+
+
+@pytest.mark.parametrize(
+    ("origin", "expected_origin"),
+    [
+        ("http://localhost:5899", "configured Vite origin"),
+        ("http://127.0.0.1:8899", "same origin"),
+        (None, "non-browser request"),
+    ],
+)
+def test_watchlist_write_allows_trusted_or_absent_origin(
+    monkeypatch: pytest.MonkeyPatch,
+    origin: str | None,
+    expected_origin: str,
+) -> None:
+    """Global Origin middleware preserves configured, same-origin, and CLI writes."""
+    from src.api import watchlist_routes
+
+    writes: list[str] = []
+
+    class ConnectionSpy:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def execute(self, statement: str, params: tuple[str, str]):
+            writes.append(statement)
+
+        def commit(self) -> None:
+            return None
+
+    monkeypatch.setattr(watchlist_routes, "_get_connection", ConnectionSpy)
+    headers = {"Host": "127.0.0.1:8899"}
+    if origin is not None:
+        headers["Origin"] = origin
+
+    response = _local_client().post("/watchlist/stocks", headers=headers, json={"code": "000001"})
+
+    assert response.status_code == 200, expected_origin
+    assert len(writes) == 1
+
+
 def test_custom_cors_origins_do_not_merge_loopback_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     start_calls: list[bool] = []
 

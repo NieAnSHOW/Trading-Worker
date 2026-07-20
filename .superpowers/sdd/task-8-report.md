@@ -225,8 +225,9 @@ dot, default ports, and IPv6 brackets) and rejects credentials, paths, query
 strings, fragments, malformed ports, and non-HTTP(S) values. Custom
 `CORS_ORIGINS` is compared as configured; defaults are not merged into it.
 The guard is invoked by `require_auth`, `require_local_or_auth`, and
-`require_settings_write_auth`, so it covers unsafe routes globally rather than
-only `/news-api`.
+`require_settings_write_auth`. The later review found that this dependency
+coverage did not include unsafe routes registered without one, so the
+application-level repair below is required for global enforcement.
 
 ### TDD Evidence
 
@@ -279,3 +280,56 @@ PASS
 the current `api_server.py` has 655 lines while its stale assertion requires
 fewer than 400. It was not changed because it is outside this security-only
 Task 8 scope.
+
+## Global Unsafe-Origin Middleware Repair
+
+### Root Cause and Repair
+
+The prior trusted-Origin guard only ran through authentication dependencies.
+`POST /watchlist/stocks` and `DELETE /watchlist/stocks/{code}` are registered
+without one, so a loopback request with an arbitrary Origin could reach the
+SQLite write handler.
+
+`_reject_untrusted_browser_write_middleware` now runs for every request before
+route handling. It delegates to the existing
+`_reject_untrusted_browser_write` and `_reject_cross_site_browser_request`
+policy; it does not duplicate Origin parsing or alter CORS configuration.
+Dependency-level checks remain intentionally redundant and fail closed.
+
+### TDD Evidence
+
+RED was added before production code and run from the repository root:
+
+```text
+pytest agent/tests/test_security_auth_api.py::test_unconfigured_loopback_origin_cannot_write_watchlist_before_persistence -q
+1 failed (expected 403, got 200)
+```
+
+The test replaces the watchlist connection with a spy and proves the handler
+executes before the repair. After adding the middleware, the same command was
+GREEN (`1 passed`). Additional global-route regression cases prove that the
+configured `http://localhost:5899` origin, exact same-origin requests, and
+non-browser requests without Origin still reach the watchlist write spy; the
+unconfigured `http://127.0.0.1:45678` case receives 403 with no write.
+
+### Verification
+
+```text
+pytest agent/tests/test_security_auth_api.py -q -k 'watchlist or vite_origin_can_refresh_across_ports or unconfigured_loopback_origin_cannot_start_news_refresh or same_origin_request_can_start_news_refresh or non_browser_request_without_origin_can_start_news_refresh or default_cors_origins_include_vite_loopback_hosts'
+9 passed, 59 deselected, 7 warnings
+
+pytest agent/tests/test_news_routes.py agent/tests/test_security_auth_api.py agent/tests/test_spa_fallback.py agent/tests/test_watchlist_crud.py -q
+83 passed, 21 warnings
+
+pytest agent/tests/test_api_infrastructure.py -q -k 'not test_api_server_is_thin_assembler'
+32 passed, 1 deselected, 7 warnings
+
+python -m py_compile agent/src/api/security.py agent/api_server.py
+ruff check agent/src/api/security.py agent/tests/test_security_auth_api.py agent/tests/test_api_infrastructure.py
+git diff --check
+PASS
+```
+
+`ruff check agent/api_server.py` continues to report the pre-existing
+`ENV_PATH` F811 redefinition, so that unrelated file-wide lint violation is
+not claimed as clean.
