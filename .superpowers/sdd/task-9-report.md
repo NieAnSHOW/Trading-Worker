@@ -106,6 +106,17 @@ backend's Python `datetime` rejects it. A `0000-01-01T10:00:00Z` regression
 first failed, then the UTC parser added the backend-compatible lower year bound
 of 1. The focused API suite passed with `19 passed`.
 
+## Permissive URL Follow-up
+
+The final review also caught two places where browser URL APIs were stricter
+than the backend's `urlsplit` and `unquote_plus`: malformed percent escapes in
+query values and out-of-range ports. Regression tests first showed both valid
+backend URL shapes being rejected. URL component decoding now follows Python's
+permissive replacement behavior, and a URL rejected only for its port is
+validated with that port removed while preserving the original URL. The 202
+refresh response test also confirmed that malformed JSON already preserves the
+actual HTTP status. The focused API suite passed with `22 passed`.
+
 ## Scope
 
 No page, router, layout navigation, global store, or polling hook was added;

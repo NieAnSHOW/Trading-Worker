@@ -225,11 +225,10 @@ function newsUtcDate(value: unknown, nullable = false): string | null {
 }
 
 function newsUrlComponent(value: string): string {
-  try {
-    return decodeURIComponent(value.replace(/\+/g, " "));
-  } catch {
-    invalidNewsResponse();
-  }
+  return value.replace(/\+/g, " ").replace(/(?:%[0-9a-f]{2})+/gi, (encoded) => {
+    const bytes = Uint8Array.from(encoded.match(/%[0-9a-f]{2}/gi)!.map((part) => Number.parseInt(part.slice(1), 16)));
+    return new TextDecoder().decode(bytes);
+  });
 }
 
 function newsSensitiveParameter(name: string): boolean {
@@ -249,12 +248,36 @@ function newsPublicUrlComponent(value: string): void {
   }
 }
 
+function newsUrlWithPermissivePort(url: string, rawAuthority: string): URL {
+  try {
+    return new URL(url);
+  } catch {
+    let hostname: string;
+    if (rawAuthority.startsWith("[")) {
+      const closeBracket = rawAuthority.indexOf("]");
+      if (closeBracket === -1 || closeBracket === rawAuthority.length - 1) invalidNewsResponse();
+      hostname = rawAuthority.slice(0, closeBracket + 1);
+    } else {
+      const portStart = rawAuthority.indexOf(":");
+      if (portStart === -1) invalidNewsResponse();
+      hostname = rawAuthority.slice(0, portStart);
+    }
+    if (!hostname) invalidNewsResponse();
+    const authorityStart = url.indexOf("//") + 2;
+    try {
+      return new URL(`${url.slice(0, authorityStart)}${hostname}${url.slice(authorityStart + rawAuthority.length)}`);
+    } catch {
+      invalidNewsResponse();
+    }
+  }
+}
+
 function newsHttpUrl(value: unknown): string {
   const url = newsString(value, 1, 2048);
   try {
     const rawAuthority = /^https?:\/\/([^/?#]+)/i.exec(url)?.[1];
     if (!rawAuthority || rawAuthority.includes("@")) invalidNewsResponse();
-    const parsed = new URL(url);
+    const parsed = newsUrlWithPermissivePort(url, rawAuthority);
     if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname || parsed.username || parsed.password) {
       invalidNewsResponse();
     }

@@ -135,6 +135,22 @@ describe("api request helper", () => {
     } satisfies Partial<ApiError>);
   });
 
+  it("preserves a successful refresh response status for malformed JSON", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response("{\"task_id\":", {
+          status: 202,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+
+    const { api } = await loadApiModule();
+
+    await expect(api.startNewsRefresh()).rejects.toMatchObject({ name: "ApiError", status: 202 });
+  });
+
   it("starts news refresh through the authenticated json client", async () => {
     const fetchMock = mockFetchJson({
       task_id: "00000000-0000-4000-8000-000000000001",
@@ -215,6 +231,17 @@ describe("api request helper", () => {
     const { parseNewsSnapshotResponse } = await loadApiModule();
 
     expect(() => parseNewsSnapshotResponse(payload)).toThrow(expect.objectContaining({ name: "ApiError", status: 200 }));
+  });
+
+  it.each([
+    "https://example.com/article?next=%ZZ",
+    "https://example.com:99999/article",
+  ])("accepts article URLs permitted by the backend: %s", async (url) => {
+    const payload = validNewsSnapshot();
+    payload.snapshot.tracks[0].items[0].url = url;
+    const { parseNewsSnapshotResponse } = await loadApiModule();
+
+    expect(parseNewsSnapshotResponse(payload).snapshot?.tracks[0].items[0].url).toBe(url);
   });
 
   it("rejects article titles longer than the backend limit", async () => {
