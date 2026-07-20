@@ -724,7 +724,7 @@ Acceptance note (2026-07-20): the user chose frontend compatibility with the bac
 - Consumes: Task 9 API 方法与类型。
 - Produces: `useNews(): NewsPageState & NewsPageActions`，供页面渲染，不修改全局 Agent store。
 
-- [ ] **Task 10 Step 1: 写首次单请求和轮询失败测试**
+- [x] **Task 10 Step 1: 写首次单请求和轮询失败测试**
 
 ```typescript
 it("loads snapshot once and polls status only while running", async () => {
@@ -741,27 +741,27 @@ it("loads snapshot once and polls status only while running", async () => {
 
 再覆盖 POST 新建/复用、failed 保留旧列表、unmount 清 timer/AbortController、迟到响应不写状态和非重叠 `setTimeout`。
 
-- [ ] **Task 10 Step 2: 运行 RED**
+- [x] **Task 10 Step 2: 运行 RED**
 
 Run: `cd frontend && npx vitest run src/hooks/__tests__/useNews.test.tsx`
 
 Expected: FAIL，因为 hook 尚不存在。
 
-- [ ] **Task 10 Step 3: 实现 reducer 与初始化**
+- [x] **Task 10 Step 3: 实现 reducer 与初始化**
 
 首次只调用 `getNewsSnapshot()`，选中赛道默认为第一个可用赛道，否则 catalog 顺序第一个；使用 snapshot 包络内 refresh 状态决定是否启动轮询。
 
-- [ ] **Task 10 Step 4: 实现串行轮询与清理**
+- [x] **Task 10 Step 4: 实现串行轮询与清理**
 
 每次 status 请求结束后才安排下一次 1000 ms `setTimeout`；终态立即停止。succeeded 后重取 snapshot，failed/cancelled 保留现有 snapshot。为 snapshot、refresh POST 和 status 分别创建 AbortController，cleanup abort 所有在途请求并清 timer；测试断言 `startNewsRefresh(signal)` 收到的 signal 在 unmount 后为 aborted。
 
-- [ ] **Task 10 Step 5: 运行 GREEN**
+- [x] **Task 10 Step 5: 运行 GREEN**
 
 Run: `cd frontend && npx vitest run src/hooks/__tests__/useNews.test.tsx`
 
 Expected: PASS，无 fake timer 或 act warning。
 
-- [ ] **Task 10 Step 6: 提交**
+- [x] **Task 10 Step 6: 提交**
 
 ```bash
 git add frontend/src/hooks/useNews.ts frontend/src/hooks/__tests__/useNews.test.tsx
