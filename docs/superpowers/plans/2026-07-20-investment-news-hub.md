@@ -577,6 +577,7 @@ git commit -s -m "feat(news): coordinate single background refresh"
 - Create: `agent/tests/test_news_routes.py`
 - Modify: `agent/api_server.py`
 - Modify: `agent/src/api/scheduled_routes.py` (FastAPI 0.115+ 的既有 204 无响应体兼容性前提，确保 API server 可加载并执行本任务的集成测试)
+- Modify: `agent/src/api/security.py` and `agent/tests/test_sse_ticket_and_headers.py` (对非法 `/news-api` query 的 Uvicorn access-log 全量脱敏，防止拒绝请求中的任意 canary 泄露)
 - Modify: `agent/tests/test_security_auth_api.py`
 - Modify: `agent/tests/test_spa_fallback.py`
 
