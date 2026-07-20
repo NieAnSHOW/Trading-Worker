@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Fixture</title>
+    <item>
+      <title>  Market &amp;lt;b&amp;gt;update&amp;lt;/b&amp;gt;  </title>
+      <link>https://news.example/articles/market</link>
+      <description>&lt;p&gt;First &amp;amp; second&lt;/p&gt;</description>
+      <pubDate>Mon, 20 Jul 2026 10:30:00 +0000</pubDate>
+    </item>
+    <item>
+      <title>Rejected link</title>
+      <link>javascript:alert(1)</link>
+    </item>
+  </channel>
+</rss>
