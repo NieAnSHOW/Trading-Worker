@@ -518,7 +518,7 @@ git commit -s -m "feat(news): enrich tracks with project llm"
 - Consumes: Tasks 1-6 的 catalog、fetcher、parser、pipeline、enricher、store。
 - Produces: `start() -> RefreshAcceptedResponse`、`status() -> RefreshStatus`、`snapshot_response() -> SnapshotResponse`、`close() -> None`，以及不启动网络工作的惰性进程单例 `get_news_coordinator() -> NewsRefreshCoordinator`。
 
-- [ ] **Task 7 Step 1: 写单任务和全流程失败测试**
+- [x] **Task 7 Step 1: 写单任务和全流程失败测试**
 
 ```python
 def test_duplicate_start_reuses_running_task() -> None:
@@ -537,33 +537,33 @@ def test_duplicate_start_reuses_running_task() -> None:
 
 再覆盖全部 12 赛道、106 endpoint 只抓一次、108 assignment 计数、阶段转换、`no_track_updated` 不调用 LLM/不写盘、LLM 全失败仍提交 feed、commit 失败保留旧快照和 close 取消。
 
-- [ ] **Task 7 Step 2: 运行 RED**
+- [x] **Task 7 Step 2: 运行 RED**
 
 Run: `pytest agent/tests/news/test_coordinator.py -q`
 
 Expected: FAIL，因为协调器尚不存在。
 
-- [ ] **Task 7 Step 3: 实现状态锁与后台任务**
+- [x] **Task 7 Step 3: 实现状态锁与后台任务**
 
 `_lock` 只保护任务创建和不可变状态替换；`start()` 在锁内创建 UUID 与 `asyncio.create_task` 后立即返回。状态阶段严格为 `idle/fetching/normalizing/enriching/committing/succeeded/failed/cancelled`。
 
-- [ ] **Task 7 Step 4: 编排 12 赛道并脱敏错误**
+- [x] **Task 7 Step 4: 编排 12 赛道并脱敏错误**
 
 抓取 endpoint 后向 assignment 分发，更新 endpoint/assignment/track 计数；网络错误按 endpoint ID 去重，关联的 assignment/track ID 有上限。所有磁盘写入只发生在通过完整 `NewsSnapshot` 校验之后。
 
-- [ ] **Task 7 Step 5: 实现 snapshot 包络和 shutdown**
+- [x] **Task 7 Step 5: 实现 snapshot 包络和 shutdown**
 
 最近内存任务失败且磁盘快照存在时 `SnapshotResponse.stale=True`；重启初始化为 idle。`close()` 取消并 await 任务，关闭 client，不持久化任务状态。
 
 模块级 `_news_coordinator: NewsRefreshCoordinator | None = None`；`get_news_coordinator()` 首次调用时构造依赖，后续返回同一实例。HTTP client 仍在刷新开始时惰性创建，getter 本身不得访问网络或 LLM。
 
-- [ ] **Task 7 Step 6: 运行 GREEN**
+- [x] **Task 7 Step 6: 运行 GREEN**
 
 Run: `pytest agent/tests/news/test_coordinator.py -q`
 
 Expected: PASS，无遗留 asyncio task warning。
 
-- [ ] **Task 7 Step 7: 提交**
+- [x] **Task 7 Step 7: 提交**
 
 ```bash
 git add agent/src/news/coordinator.py agent/tests/news/test_coordinator.py openspec/changes/investment-news-hub/tasks.md
