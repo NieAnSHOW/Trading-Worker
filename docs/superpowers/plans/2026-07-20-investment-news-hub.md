@@ -426,7 +426,7 @@ Expected: FAIL，因为 pipeline 尚不存在。
 
 - [ ] **Task 5 Step 4: 实现三态合并与提交判定**
 
-本次赛道至少一个有效条目时设 `fresh`，与旧条目按 ID 合并至 100 条；本次无有效条目且有旧数据时原样复用并设 `stale`；没有旧数据时设 `unavailable`。`updated_track_ids` 为空时抛 `NoTrackUpdatedError("no_track_updated")`，不得调用 LLM 或存储。
+本次赛道至少一个有效条目时设 `fresh`，与旧条目按 ID 合并至 100 条；本次无有效条目且有旧数据时原样复用并设 `stale`；没有旧数据时设 `unavailable`。pipeline 始终返回 12 个赛道及 `updated_track_ids`；当该集合为空时，由 Task 7 的协调器以 `no_track_updated` 结束刷新，在调用 LLM 或存储前拒绝提交。
 
 - [ ] **Task 5 Step 5: 运行 GREEN**
 
