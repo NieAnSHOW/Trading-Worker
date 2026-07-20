@@ -178,7 +178,16 @@ def test_remote_news_api_requires_existing_auth_dependency(
     assert response.status_code == 401
 
 
-def test_cross_site_news_refresh_is_rejected_before_coordinator_work() -> None:
+def test_cross_site_news_refresh_is_rejected_before_coordinator_work(monkeypatch: pytest.MonkeyPatch) -> None:
+    start_calls: list[bool] = []
+    real_start = api_server.news_coordinator.start
+
+    async def start_spy():
+        start_calls.append(True)
+        return await real_start()
+
+    monkeypatch.setattr(api_server.news_coordinator, "start", start_spy)
+
     response = _local_client().post(
         "/news-api/refresh",
         headers={"Origin": "https://attacker.example", "Content-Type": "application/json"},
@@ -187,6 +196,7 @@ def test_cross_site_news_refresh_is_rejected_before_coordinator_work() -> None:
 
     assert response.status_code == 403
     assert response.headers["content-type"].startswith("application/json")
+    assert start_calls == []
 
 
 def _llm_settings_payload(base_url: str = "https://api.openai.com/v1") -> dict[str, object]:

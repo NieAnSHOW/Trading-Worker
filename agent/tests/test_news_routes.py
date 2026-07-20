@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import importlib
 from pathlib import Path
 import subprocess
 import sys
@@ -13,7 +14,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from src.news.coordinator import NewsRefreshCoordinator
 from src.news.models import RefreshAcceptedResponse, RefreshStatus, SnapshotResponse
+from src.news.storage import SnapshotStorageError
 
 
 class FakeNewsCoordinator:
@@ -21,16 +24,19 @@ class FakeNewsCoordinator:
 
     def __init__(self) -> None:
         self.gate = asyncio.Event()
+        self.running = asyncio.Event()
         self.task_id = UUID("00000000-0000-0000-0000-000000000001")
         self.start_calls = 0
+        self.background_starts = 0
         self.close_calls = 0
-        self._started = False
+        self._task: asyncio.Task[None] | None = None
 
     async def start(self) -> RefreshAcceptedResponse:
         self.start_calls += 1
-        reused = self._started and not self.gate.is_set()
+        reused = self._task is not None and not self._task.done()
         if not reused:
-            self._started = True
+            self._task = asyncio.create_task(self._refresh())
+            await self.running.wait()
         status = RefreshStatus(
             state="fetching",
             task_id=self.task_id,
@@ -52,6 +58,13 @@ class FakeNewsCoordinator:
     async def close(self) -> None:
         self.close_calls += 1
         self.gate.set()
+        if self._task is not None:
+            await self._task
+
+    async def _refresh(self) -> None:
+        self.background_starts += 1
+        self.running.set()
+        await self.gate.wait()
 
 
 @pytest.fixture()
@@ -69,7 +82,13 @@ def client(coordinator: FakeNewsCoordinator) -> TestClient:
         return None
 
     register_news_routes(app, require_auth=allow_request, coordinator=coordinator)
-    return TestClient(app)
+
+    @app.on_event("shutdown")
+    async def close_coordinator() -> None:
+        await coordinator.close()
+
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 def test_snapshot_returns_unavailable_envelope_without_starting_refresh(
@@ -83,7 +102,7 @@ def test_snapshot_returns_unavailable_envelope_without_starting_refresh(
     assert coordinator.start_calls == 0
 
 
-def test_refresh_returns_202_and_reuses_task(client: TestClient) -> None:
+def test_refresh_returns_202_and_reuses_the_task_awaiting_its_gate(client: TestClient, coordinator: FakeNewsCoordinator) -> None:
     first = client.post("/news-api/refresh")
     second = client.post("/news-api/refresh")
 
@@ -91,6 +110,10 @@ def test_refresh_returns_202_and_reuses_task(client: TestClient) -> None:
     assert second.status_code == 202
     assert second.json()["reused"] is True
     assert second.json()["task_id"] == first.json()["task_id"]
+    assert coordinator.running.is_set()
+    assert coordinator.gate.is_set() is False
+    assert coordinator.start_calls == 2
+    assert coordinator.background_starts == 1
 
 
 def test_refresh_status_does_not_start_work(client: TestClient, coordinator: FakeNewsCoordinator) -> None:
@@ -114,15 +137,79 @@ def test_news_routes_reject_body_and_query_parameters(client: TestClient) -> Non
     assert "secret" not in query.text
 
 
-def test_coordinator_close_is_called_by_api_shutdown_hook(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_snapshot_corruption_returns_a_redacted_envelope_without_logging_canary(caplog: pytest.LogCaptureFixture) -> None:
+    class CorruptStore:
+        def read(self) -> None:
+            raise SnapshotStorageError("snapshot_corrupt", "snapshot-canary-do-not-disclose")
+
+        def write(self, snapshot: object) -> None:
+            raise AssertionError("snapshot reads must not write")
+
+    coordinator = NewsRefreshCoordinator(store=CorruptStore())
+    app = FastAPI()
+
+    async def allow_request() -> None:
+        return None
+
+    from src.api.news_routes import register_news_routes
+
+    register_news_routes(app, require_auth=allow_request, coordinator=coordinator)
+    with TestClient(app) as test_client:
+        response = test_client.get("/news-api/snapshot")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "available": False,
+        "stale": False,
+        "snapshot": None,
+        "refresh": {
+            "state": "idle",
+            "task_id": None,
+            "started_at": None,
+            "completed_at": None,
+            "processed_endpoints": 0,
+            "successful_endpoints": 0,
+            "failed_endpoints": 0,
+            "processed_tracks": 0,
+            "total_endpoints": 106,
+            "total_tracks": 12,
+            "error": None,
+        },
+        "error": {"code": "snapshot_corrupt", "message": "news snapshot is corrupt"},
+    }
+    assert "snapshot-canary-do-not-disclose" not in response.text
+    assert "snapshot-canary-do-not-disclose" not in caplog.text
+
+
+def test_api_server_registers_and_closes_the_same_news_coordinator(monkeypatch: pytest.MonkeyPatch) -> None:
     import api_server
+    import src.api.news_routes as news_routes
+    import src.news.coordinator as coordinator_module
 
     coordinator = FakeNewsCoordinator()
-    monkeypatch.setattr(api_server, "news_coordinator", coordinator)
+    registrations: list[object] = []
 
-    asyncio.run(api_server._close_news_coordinator())
+    def get_coordinator() -> FakeNewsCoordinator:
+        return coordinator
 
+    real_register = news_routes.register_news_routes
+
+    def register_spy(app: FastAPI, require_auth: object, coordinator: object) -> None:
+        registrations.append(coordinator)
+        real_register(app, require_auth=require_auth, coordinator=coordinator)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(coordinator_module, "get_news_coordinator", get_coordinator)
+    monkeypatch.setattr(news_routes, "register_news_routes", register_spy)
+    monkeypatch.delitem(sys.modules, "api_server")
+
+    reloaded_api_server = importlib.import_module("api_server")
+    with TestClient(reloaded_api_server.app):
+        pass
+
+    assert registrations == [coordinator]
     assert coordinator.close_calls == 1
+    assert reloaded_api_server.news_coordinator is coordinator
+    monkeypatch.setitem(sys.modules, "api_server", api_server)
 
 
 def test_api_server_imports_with_scheduled_204_route() -> None:

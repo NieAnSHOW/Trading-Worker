@@ -72,6 +72,36 @@ python -m py_compile agent/api_server.py agent/src/api/news_routes.py
 PASS
 ```
 
+## Contract Regression Strengthening
+
+The production route implementation was already correct when this follow-up
+test-only pass began, so the added assertions are documented as regression
+verification rather than a fabricated RED/GREEN cycle. The focused suite
+verifies that:
+
+- `FakeNewsCoordinator` starts a background refresh that actually awaits an
+  `asyncio.Event`; the second POST sees that task still running and does not
+  create a second task.
+- A corrupted snapshot returns the stable unavailable/corruption envelope, and
+  a synthetic secret canary is absent from both the JSON response and captured
+  logs.
+- A cross-site refresh POST returns 403 before the real app's registered
+  coordinator `start` method is invoked.
+- A controlled `api_server` re-import replaces the coordinator factory and
+  route-registration function only for the import. `TestClient` shutdown then
+  proves the coordinator passed into registration is the exact instance closed
+  by the registered shutdown hook.
+
+Regression verification completed with the existing production implementation:
+
+```text
+pytest agent/tests/test_news_routes.py agent/tests/test_security_auth_api.py agent/tests/test_spa_fallback.py -q
+64 passed, 21 warnings
+
+python -m py_compile agent/api_server.py agent/src/api/news_routes.py
+PASS
+```
+
 ## Commit
 
 Current `HEAD`: `feat(news): expose authenticated refresh api` (DCO signed).
