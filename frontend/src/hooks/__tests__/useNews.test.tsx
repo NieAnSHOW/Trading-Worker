@@ -111,6 +111,19 @@ describe("useNews", () => {
     expect(result.current.snapshot?.tracks[0].items[0].id).toBe("after-ai");
   });
 
+  it("loads the initial snapshot only once under StrictMode", async () => {
+    apiMock.getNewsSnapshot.mockResolvedValue(snapshotResponse("initial"));
+
+    const { result } = renderHook(() => useNews(), { reactStrictMode: true });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(apiMock.getNewsSnapshot).toHaveBeenCalledTimes(1);
+    expect(result.current.snapshot?.tracks[0].items[0].id).toBe("initial-ai");
+  });
+
   it.each([false, true])("starts a %s reused refresh and polls its returned running status", async (reused) => {
     apiMock.getNewsSnapshot.mockResolvedValue(snapshotResponse("before"));
     apiMock.startNewsRefresh.mockResolvedValue(refreshAccepted(reused));
@@ -140,10 +153,44 @@ describe("useNews", () => {
     expect(apiMock.getNewsSnapshot).toHaveBeenCalledTimes(1);
   });
 
-  it("cleans timers and aborts the independent refresh request on unmount", async () => {
+  it("does not apply a stale snapshot that resolves while a refresh is starting", async () => {
+    const pendingSnapshot = deferred<NewsSnapshotResponse>();
+    let snapshotSignal: AbortSignal | undefined;
+    apiMock.getNewsSnapshot.mockImplementation((signal?: AbortSignal) => {
+      snapshotSignal = signal;
+      return pendingSnapshot.promise;
+    });
+    apiMock.startNewsRefresh.mockResolvedValue(refreshAccepted(false));
+
+    const { result } = renderHook(() => useNews());
+    await waitFor(() => expect(apiMock.getNewsSnapshot).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await result.current.refreshNews(); });
+    expect(snapshotSignal?.aborted).toBe(true);
+
+    await act(async () => { pendingSnapshot.resolve(snapshotResponse("stale")); });
+
+    expect(result.current.snapshot).toBeNull();
+    expect(result.current.refreshStatus?.state).toBe("fetching");
+    expect(result.current.isRefreshing).toBe(true);
+  });
+
+  it("aborts distinct snapshot, refresh, and status signals during lifecycle cleanup", async () => {
+    const pendingSnapshot = deferred<NewsSnapshotResponse>();
     let refreshSignal: AbortSignal | undefined;
+    let snapshotSignal: AbortSignal | undefined;
+    let statusSignal: AbortSignal | undefined;
     const pendingRefresh = deferred<NewsRefreshAccepted>();
-    apiMock.getNewsSnapshot.mockResolvedValue(snapshotResponse("before"));
+    apiMock.getNewsSnapshot
+      .mockResolvedValueOnce(snapshotResponse("before", runningStatus()))
+      .mockImplementationOnce((signal?: AbortSignal) => {
+        snapshotSignal = signal;
+        return pendingSnapshot.promise;
+      });
+    apiMock.getNewsRefreshStatus.mockImplementation((signal?: AbortSignal) => {
+      statusSignal = signal;
+      return Promise.resolve(runningStatus("succeeded"));
+    });
     apiMock.startNewsRefresh.mockImplementation((signal?: AbortSignal) => {
       refreshSignal = signal;
       return pendingRefresh.promise;
@@ -152,13 +199,24 @@ describe("useNews", () => {
     const { result, unmount } = renderHook(() => useNews());
     await waitFor(() => expect(apiMock.getNewsSnapshot).toHaveBeenCalledTimes(1));
 
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    await waitFor(() => expect(apiMock.getNewsSnapshot).toHaveBeenCalledTimes(2));
+
     act(() => { void result.current.refreshNews(); });
     await waitFor(() => expect(apiMock.startNewsRefresh).toHaveBeenCalledTimes(1));
     unmount();
 
+    expect(snapshotSignal).toBeDefined();
+    expect(statusSignal).toBeDefined();
+    expect(refreshSignal).toBeDefined();
+    expect(snapshotSignal).not.toBe(statusSignal);
+    expect(snapshotSignal).not.toBe(refreshSignal);
+    expect(statusSignal).not.toBe(refreshSignal);
+    expect(snapshotSignal?.aborted).toBe(true);
+    expect(statusSignal?.aborted).toBe(true);
     expect(refreshSignal?.aborted).toBe(true);
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
-    expect(apiMock.getNewsRefreshStatus).not.toHaveBeenCalled();
+    expect(apiMock.getNewsRefreshStatus).toHaveBeenCalledTimes(1);
   });
 
   it("ignores a late snapshot response after unmount", async () => {
@@ -174,16 +232,24 @@ describe("useNews", () => {
     expect(apiMock.getNewsRefreshStatus).not.toHaveBeenCalled();
   });
 
-  it("does not overlap status requests while an earlier poll is unresolved", async () => {
-    const pendingStatus = deferred<NewsRefreshStatus>();
+  it("schedules the next status request exactly one second after the prior request resolves", async () => {
+    const firstStatus = deferred<NewsRefreshStatus>();
     apiMock.getNewsSnapshot.mockResolvedValue(snapshotResponse("before", runningStatus()));
-    apiMock.getNewsRefreshStatus.mockReturnValue(pendingStatus.promise);
+    apiMock.getNewsRefreshStatus
+      .mockReturnValueOnce(firstStatus.promise)
+      .mockResolvedValueOnce(runningStatus("cancelled"));
 
     const { unmount } = renderHook(() => useNews());
     await waitFor(() => expect(apiMock.getNewsSnapshot).toHaveBeenCalledTimes(1));
 
-    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
     expect(apiMock.getNewsRefreshStatus).toHaveBeenCalledTimes(1);
+
+    await act(async () => { firstStatus.resolve(runningStatus()); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(999); });
+    expect(apiMock.getNewsRefreshStatus).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(apiMock.getNewsRefreshStatus).toHaveBeenCalledTimes(2);
 
     unmount();
   });

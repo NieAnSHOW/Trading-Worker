@@ -99,9 +99,11 @@ export function useNews(): NewsPageState & NewsPageActions {
   const pollGenerationRef = useRef(0);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const snapshotControllerRef = useRef<AbortController | null>(null);
+  const snapshotGenerationRef = useRef(0);
   const refreshControllerRef = useRef<AbortController | null>(null);
   const statusControllerRef = useRef<AbortController | null>(null);
   const pollRefreshRef = useRef<(generation: number) => Promise<void>>(async () => {});
+  const effectGenerationRef = useRef(0);
 
   const stopPolling = useCallback(() => {
     pollGenerationRef.current += 1;
@@ -127,18 +129,25 @@ export function useNews(): NewsPageState & NewsPageActions {
     schedulePoll(generation);
   }, [schedulePoll, stopPolling]);
 
+  const invalidateSnapshot = useCallback(() => {
+    snapshotGenerationRef.current += 1;
+    snapshotControllerRef.current?.abort();
+    snapshotControllerRef.current = null;
+  }, []);
+
   const loadSnapshot = useCallback(async () => {
     snapshotControllerRef.current?.abort();
     const controller = new AbortController();
     snapshotControllerRef.current = controller;
+    const generation = snapshotGenerationRef.current;
 
     try {
       const response = await api.getNewsSnapshot(controller.signal);
-      if (!activeRef.current || controller.signal.aborted) return;
+      if (!activeRef.current || controller.signal.aborted || generation !== snapshotGenerationRef.current) return;
       dispatch({ type: "snapshotLoaded", response });
       if (refreshIsRunning(response.refresh)) startPolling();
     } catch (error) {
-      if (!activeRef.current || controller.signal.aborted || wasAborted(error)) return;
+      if (!activeRef.current || controller.signal.aborted || wasAborted(error) || generation !== snapshotGenerationRef.current) return;
       dispatch({ type: "snapshotFailed", error });
     } finally {
       if (snapshotControllerRef.current === controller) snapshotControllerRef.current = null;
@@ -169,6 +178,7 @@ export function useNews(): NewsPageState & NewsPageActions {
 
   const refreshNews = useCallback(async () => {
     stopPolling();
+    invalidateSnapshot();
     refreshControllerRef.current?.abort();
     const controller = new AbortController();
     refreshControllerRef.current = controller;
@@ -189,7 +199,7 @@ export function useNews(): NewsPageState & NewsPageActions {
     } finally {
       if (refreshControllerRef.current === controller) refreshControllerRef.current = null;
     }
-  }, [loadSnapshot, startPolling, stopPolling]);
+  }, [invalidateSnapshot, loadSnapshot, startPolling, stopPolling]);
 
   const selectTrack = useCallback((trackId: NewsTrackId) => {
     dispatch({ type: "trackSelected", trackId });
@@ -197,16 +207,27 @@ export function useNews(): NewsPageState & NewsPageActions {
 
   useEffect(() => {
     activeRef.current = true;
-    void loadSnapshot();
+    const effectGeneration = ++effectGenerationRef.current;
+    const snapshotGeneration = snapshotGenerationRef.current;
+    queueMicrotask(() => {
+      if (
+        activeRef.current
+        && effectGeneration === effectGenerationRef.current
+        && snapshotGeneration === snapshotGenerationRef.current
+      ) {
+        void loadSnapshot();
+      }
+    });
 
     return () => {
       activeRef.current = false;
+      effectGenerationRef.current += 1;
       stopPolling();
-      snapshotControllerRef.current?.abort();
+      invalidateSnapshot();
       refreshControllerRef.current?.abort();
       statusControllerRef.current?.abort();
     };
-  }, [loadSnapshot, stopPolling]);
+  }, [invalidateSnapshot, loadSnapshot, stopPolling]);
 
   return { ...state, selectTrack, refreshNews };
 }
