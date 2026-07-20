@@ -127,7 +127,7 @@
 
 #### Scenario: 所有赛道均未更新
 - **WHEN** 一次刷新完成采集后 12 个赛道均没有获得本次可用新条目
-- **THEN** pipeline 保留可检查的 12 个 stale/unavailable 赛道状态；协调器将任务标记为失败，返回稳定错误码，并且在调用 LLM 或写入前不重写最后一次成功快照
+- **THEN** pipeline 保留可检查的 12 个 stale/unavailable 赛道状态；协调器将任务标记为失败并返回 `no_track_updated` 稳定错误码，且在调用 LLM 或写入前不重写最后一次成功快照
 
 #### Scenario: 记录赛道新鲜度
 - **WHEN** 至少一个赛道获得更新并提交新的组合快照

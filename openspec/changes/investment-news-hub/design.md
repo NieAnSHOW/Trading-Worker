@@ -78,7 +78,7 @@ Vibe Trading Desktop 由单个 FastAPI sidecar 和 React SPA 组成，已有统�
 
 使用进程级 `NewsRefreshCoordinator` 保存一个 `asyncio.Task`、一个保护创建/状态变更的锁，以及当前任务的不可变状态快照。`POST /news-api/refresh` 在无任务运行时创建 UUID 任务并通过 `asyncio.create_task` 启动，返回 `202`；已有任务运行时返回该任务，不创建第二个。阻塞解析或同步 LLM 调用通过 `asyncio.to_thread` 移出事件循环。
 
-状态阶段至少包括 `fetching`、`normalizing`、`enriching`、`committing`、`succeeded` 和 `failed`，并包含开始/完成时间、已处理端点数、成功/失败端点数、已处理赛道映射数、总端点/映射数及清理后的错误摘要。任务状态仅存在于当前进程：重启后回到 `idle`，磁盘最新快照保持可读；应用关闭时取消未完成任务，不提交部分结果。
+状态阶段至少包括 `fetching`、`normalizing`、`enriching`、`committing`、`succeeded`、`failed` 和 `cancelled`，并包含开始/完成时间、已处理端点数、成功/失败端点数、已处理赛道映射数、总端点/映射数及清理后的错误摘要。任务状态仅存在于当前进程：重启后回到 `idle`，磁盘最新快照保持可读；应用关闭时取消尚未进入原子提交的任务，不提交部分结果；一旦同步原子替换已开始，关闭流程等待它到达成功或失败终态，避免状态与磁盘快照分裂。
 
 备选方案是持久队列或外部任务系统。首版仅允许一个手动任务，持久化调度会引入不必要的第二套运行基础设施，因此不采用。
 
