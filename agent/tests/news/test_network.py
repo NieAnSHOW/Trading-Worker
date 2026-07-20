@@ -89,6 +89,21 @@ class BlockingTransport(httpx.AsyncBaseTransport):
         return httpx.Response(200, stream=_ByteStream([b"ok"]), request=request)
 
 
+class RedirectThenBlockingTransport(httpx.AsyncBaseTransport):
+    def __init__(self) -> None:
+        self.requests: list[httpx.Request] = []
+        self.second_request_started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            return httpx.Response(302, headers={"location": "/next"}, request=request)
+        self.second_request_started.set()
+        await self.release.wait()
+        return httpx.Response(200, stream=_ByteStream([b"ok"]), request=request)
+
+
 class BrokenResolver:
     async def resolve(self, host: str) -> list[str]:
         raise RuntimeError("private resolver diagnostic")
@@ -129,6 +144,27 @@ async def test_fetch_pins_request_to_resolved_ip_and_preserves_host_and_sni() ->
     assert request.extensions["sni_hostname"] == "feed.example"
 
 
+@_async_test
+async def test_fetch_idna_canonicalizes_unicode_hostname_for_resolution_host_and_sni() -> None:
+    resolver = FakeResolver(
+        {
+            "éxample.test": ["93.184.216.34"],
+            "xn--xample-9ua.test": ["93.184.216.34"],
+        }
+    )
+    transport = FakeTransport(
+        {"https://93.184.216.34/rss": httpx.Response(200, stream=_ByteStream([b"<rss />"]))}
+    )
+
+    result = await PublicFeedClient(resolver, transport=transport).fetch(endpoint("https://éxample.test/rss"))
+
+    assert result.body == b"<rss />"
+    assert result.error_code is None
+    assert resolver.calls == ["xn--xample-9ua.test"]
+    assert transport.requests[0].headers["host"] == "xn--xample-9ua.test"
+    assert transport.requests[0].extensions["sni_hostname"] == "xn--xample-9ua.test"
+
+
 @pytest.mark.parametrize(
     ("url", "addresses", "expected_code"),
     [
@@ -151,6 +187,18 @@ async def test_fetch_rejects_unsafe_or_invalid_targets(
 
     assert result.body is None
     assert result.error_code == expected_code
+    assert transport.requests == []
+
+
+@_async_test
+async def test_fetch_rejects_mixed_public_and_private_dns_answers_before_transport() -> None:
+    transport = FakeTransport()
+    resolver = FakeResolver({"feed.example": ["93.184.216.34", "127.0.0.1"]})
+
+    result = await PublicFeedClient(resolver, transport=transport).fetch(endpoint())
+
+    assert result.body is None
+    assert result.error_code == "unsafe_target"
     assert transport.requests == []
 
 
@@ -272,6 +320,25 @@ async def test_fetch_applies_a_total_deadline_to_a_slow_stream(monkeypatch: pyte
 
     assert result.body is None
     assert result.error_code == "timeout"
+
+
+@_async_test
+async def test_fetch_applies_total_deadline_across_redirect_request_stages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(network, "TOTAL_FETCH_TIMEOUT_SECONDS", 0.01)
+    transport = RedirectThenBlockingTransport()
+    resolver = FakeResolver({"feed.example": ["93.184.216.34"]})
+
+    try:
+        result = await asyncio.wait_for(PublicFeedClient(resolver, transport=transport).fetch(endpoint()), timeout=0.1)
+    finally:
+        transport.release.set()
+
+    assert result.body is None
+    assert result.error_code == "timeout"
+    assert len(transport.requests) == 2
+    assert transport.second_request_started.is_set()
 
 
 @_async_test

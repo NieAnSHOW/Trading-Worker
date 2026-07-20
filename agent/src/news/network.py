@@ -92,12 +92,18 @@ class PublicFeedClient:
                         return self._failure(endpoint, error_code)
                     assert target is not None
 
-                    request = httpx.Request(
-                        "GET",
-                        target.request_url,
-                        headers={"Host": target.host_header, "Accept": "application/atom+xml, application/rss+xml, application/xml"},
-                        extensions={"sni_hostname": target.hostname},
-                    )
+                    try:
+                        request = httpx.Request(
+                            "GET",
+                            target.request_url,
+                            headers={
+                                "Host": target.host_header,
+                                "Accept": "application/atom+xml, application/rss+xml, application/xml",
+                            },
+                            extensions={"sni_hostname": target.hostname},
+                        )
+                    except (UnicodeError, ValueError, httpx.InvalidURL):
+                        return self._failure(endpoint, "invalid_url")
                     response = await client.send(request, stream=True)
                     try:
                         if response.is_redirect:
@@ -143,6 +149,10 @@ class PublicFeedClient:
         if parsed.scheme not in {"http", "https"}:
             return None, "unsupported_scheme"
         if not hostname or parsed.username is not None or parsed.password is not None:
+            return None, "invalid_url"
+        try:
+            hostname = hostname.encode("idna").decode("ascii")
+        except UnicodeError:
             return None, "invalid_url"
 
         try:
