@@ -138,3 +138,30 @@ Minor：`test_coordinator.py:271` 仅断言 secret 不出现；应补充每 endp
 ### 提交
 
 本次修复提交：`fix(news): correct refresh cancellation and error codes`（DCO）。
+
+## 第二轮审查修复：shutdown gate
+
+### 根因
+
+`close()` 过去只在锁内读取当前 task，随后释放锁并等待它完成。若旧 task 在
+`committing` 阶段完成，等待期间调用的 `start()` 可以观察到已完成 task 并创建新的
+刷新任务；随后 shutdown 继续关闭 client，可能关闭新任务共享的 client。
+
+### RED / GREEN
+
+先新增独立并发用例
+`test_start_is_rejected_once_close_has_begun`。旧实现在 `close()` 等待 committing
+write 时允许 `start()` 复用 task，因此该用例以“未抛出 RuntimeError”失败。
+
+最小修复为 coordinator 的不可逆 `_closing` 生命周期门禁：`close()` 在同一把锁内先
+置位，`start()` 一旦观察到该门禁即稳定抛出
+`RuntimeError("news refresh coordinator is closed")`。close 完成后门禁不重置，
+coordinator 仍保持 closed，之后的 `start()` 继续被拒绝。该用例 GREEN：`1 passed`。
+
+### 验证与提交
+
+- `pytest agent/tests/news/test_coordinator.py agent/tests/news/test_models.py -q`：`58 passed`
+- `pytest agent/tests/news -q`：`126 passed`
+- `ruff check agent/src/news/coordinator.py agent/tests/news/test_coordinator.py`、
+  `py_compile`、`compileall` 与 `git diff --check`：通过。
+- 提交：`fix(news): gate refresh starts during shutdown`（DCO）。

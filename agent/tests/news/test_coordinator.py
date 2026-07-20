@@ -4,6 +4,8 @@ from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from typing import Any
 
+import pytest
+
 from src.news.catalog import NewsCatalog, SourceAssignment
 from src.news.feeds import RawFeedItem
 from src.news.llm import enrich_tracks
@@ -390,6 +392,36 @@ def test_close_waits_for_committing_write_and_reports_its_success() -> None:
         assert status.state == "succeeded"
         assert store.snapshot == store.writes[0]
         assert store.snapshot != previous
+        assert client.closed is True
+
+    asyncio.run(run_case())
+
+
+def test_start_is_rejected_once_close_has_begun() -> None:
+    async def run_case() -> None:
+        store = MemoryStore()
+        store.write_gate = threading.Event()
+
+        async def identity_enricher(
+            tracks: Sequence[TrackSnapshot], updated_track_ids: frozenset[str], llm_factory
+        ) -> tuple[TrackSnapshot, ...]:
+            return tuple(tracks)
+
+        coordinator, client, _ = make_coordinator(store=store, enricher=identity_enricher)
+        await coordinator.start()
+        await asyncio.to_thread(store.write_started.wait, 2)
+        assert (await coordinator.status()).state == "committing"
+
+        closing = asyncio.create_task(coordinator.close())
+        await asyncio.sleep(0)
+
+        with pytest.raises(RuntimeError, match="news refresh coordinator is closed"):
+            await coordinator.start()
+
+        store.write_gate.set()
+        await closing
+        with pytest.raises(RuntimeError, match="news refresh coordinator is closed"):
+            await coordinator.start()
         assert client.closed is True
 
     asyncio.run(run_case())

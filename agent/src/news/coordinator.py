@@ -97,6 +97,7 @@ class NewsRefreshCoordinator:
         self._now = now or _utc_now
 
         self._lock = asyncio.Lock()
+        self._closing = False
         self._task: asyncio.Task[None] | None = None
         self._client: FeedClient | None = None
         self._snapshot: NewsSnapshot | None = None
@@ -105,6 +106,8 @@ class NewsRefreshCoordinator:
     async def start(self) -> RefreshAcceptedResponse:
         """Start one background refresh, or reuse the currently running task."""
         async with self._lock:
+            if self._closing:
+                raise RuntimeError("news refresh coordinator is closed")
             if self._task is not None and not self._task.done():
                 assert self._status.task_id is not None
                 return RefreshAcceptedResponse(
@@ -173,6 +176,7 @@ class NewsRefreshCoordinator:
     async def close(self) -> None:
         """Cancel active work, await it, and release the lazily-created client."""
         async with self._lock:
+            self._closing = True
             task = self._task
             should_cancel = self._status.state != "committing"
         if task is not None and not task.done():
