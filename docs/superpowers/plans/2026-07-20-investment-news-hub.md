@@ -184,7 +184,7 @@ git commit -s -m "feat(news): vendor fixed investment news catalog"
 - Consumes: Task 1 的稳定 track/assignment ID。
 - Produces: `NewsSnapshot`、`TrackSnapshot`、`RefreshStatus`、`SnapshotResponse`、`AtomicSnapshotStore.read()` 与 `AtomicSnapshotStore.write(snapshot)`。
 
-- [ ] **Task 2 Step 1: 写 schema 和存储失败测试**
+- [x] **Task 2 Step 1: 写 schema 和存储失败测试**
 
 ```python
 def test_unavailable_track_invariant() -> None:
@@ -210,13 +210,13 @@ def test_atomic_store_keeps_old_snapshot_on_replace_failure(tmp_path: Path, monk
     assert store.read().tracks[0].items[0].title_original == "old"
 ```
 
-- [ ] **Task 2 Step 2: 运行 RED**
+- [x] **Task 2 Step 2: 运行 RED**
 
 Run: `pytest agent/tests/news/test_models.py agent/tests/news/test_storage.py -q`
 
 Expected: FAIL，因为模型与存储类尚不存在。
 
-- [ ] **Task 2 Step 3: 实现模型不变量**
+- [x] **Task 2 Step 3: 实现模型不变量**
 
 模型使用 `extra="forbid"`，UTC datetime，条目标题/摘要 `max_length=300/1000`，赛道条目 `max_length=100`。`TrackSnapshot` model validator 强制 `fresh/stale/unavailable` 与 `generated_at/stale/items` 一致；`NewsSnapshot` model validator 强制赛道 ID 和顺序精确等于 catalog 的 `ai/semi/robot/auto/energy/bio/space/security/tech/consumer/macro/science`，不能只验证数量和唯一性。
 
@@ -234,17 +234,17 @@ class RefreshAcceptedResponse(BaseModel):
     status: RefreshStatus
 ```
 
-- [ ] **Task 2 Step 4: 实现原子写入**
+- [x] **Task 2 Step 4: 实现原子写入**
 
 `AtomicSnapshotStore` 默认路径为 `get_data_dir() / "news" / "latest.json"`。创建/重申 `news/` 目录权限 `0700`；用同目录 `mkstemp`、`fchmod(0600)`、稳定 JSON、flush/fsync、重新 `model_validate_json`、`os.replace`、`chmod(0600)` 和 best-effort 目录 fsync；异常删除临时文件并抛稳定领域异常。
 
-- [ ] **Task 2 Step 5: 运行 GREEN、权限与损坏文件测试**
+- [x] **Task 2 Step 5: 运行 GREEN、权限与损坏文件测试**
 
 Run: `pytest agent/tests/news/test_models.py agent/tests/news/test_storage.py -q`
 
 Expected: PASS，覆盖 0600、损坏 schema、文件过大、原子替换与旧快照保留。
 
-- [ ] **Task 2 Step 6: 提交**
+- [x] **Task 2 Step 6: 提交**
 
 ```bash
 git add agent/src/news/models.py agent/src/news/storage.py agent/tests/news/test_models.py agent/tests/news/test_storage.py openspec/changes/investment-news-hub/tasks.md
