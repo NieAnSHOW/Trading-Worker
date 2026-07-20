@@ -41,8 +41,17 @@ def main() -> int:
     # 证明入口链路顶层不 import 重型包。
     try:
         import cli  # noqa: F401
-        from api_server import app  # noqa: F401
+        from api_server import app
         print("OK   import cli + api_server.app (serve 入口链路顶层就绪)")
+        try:
+            snapshot_path = str(app.url_path_for("get_snapshot"))
+        except Exception:  # noqa: BLE001 - missing routes must fail the smoke, not crash it
+            snapshot_path = None
+        if snapshot_path == "/news-api/snapshot":
+            print("OK   route /news-api/snapshot (news API 已注册)")
+        else:
+            failed.append(("/news-api/snapshot", "route is not registered"))
+            print("FAIL route /news-api/snapshot: route is not registered")
     except Exception as exc:  # noqa: BLE001
         failed.append(("cli/api_server", repr(exc)))
         print(f"FAIL import cli/api_server: {exc!r}")
