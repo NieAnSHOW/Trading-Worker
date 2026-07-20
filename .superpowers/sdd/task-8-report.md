@@ -209,3 +209,73 @@ ruff check agent/src/api/security.py agent/tests/test_sse_ticket_and_headers.py
 git diff --check
 PASS
 ```
+
+## Trusted Origin Policy Follow-up
+
+### Approved Policy
+
+Unsafe HTTP requests now reject `Sec-Fetch-Site: cross-site` and require any
+supplied `Origin` to be either exact same-origin or an exact normalized member
+of `_CORS_ORIGINS`. Requests without `Origin` retain the existing non-browser
+authentication behavior. The default origins now include both Vite addresses:
+`http://localhost:5899` and `http://127.0.0.1:5899`.
+
+The comparison normalizes only HTTP(S) origins (scheme/host case, trailing host
+dot, default ports, and IPv6 brackets) and rejects credentials, paths, query
+strings, fragments, malformed ports, and non-HTTP(S) values. Custom
+`CORS_ORIGINS` is compared as configured; defaults are not merged into it.
+The guard is invoked by `require_auth`, `require_local_or_auth`, and
+`require_settings_write_auth`, so it covers unsafe routes globally rather than
+only `/news-api`.
+
+### TDD Evidence
+
+RED, before the implementation:
+
+```text
+pytest agent/tests/test_security_auth_api.py -q -k 'vite_origin_can_refresh_across_ports or unconfigured_loopback_origin_cannot_start_news_refresh or same_origin_request_can_start_news_refresh or non_browser_request_without_origin_can_start_news_refresh or default_cors_origins_include_vite_loopback_hosts'
+2 failed, 3 passed
+```
+
+The arbitrary `http://127.0.0.1:45678` Origin incorrectly received `202` and
+started the news coordinator; the two default Vite origins were absent.
+
+An additional global-write RED demonstrated that the same arbitrary loopback
+Origin could write `/settings/llm` in local dev mode:
+
+```text
+pytest agent/tests/test_security_auth_api.py::test_unconfigured_loopback_origin_cannot_write_llm_settings -q
+1 failed (expected 403, got 200)
+```
+
+GREEN:
+
+```text
+pytest agent/tests/test_security_auth_api.py -q -k 'vite_origin_can_refresh_across_ports or unconfigured_loopback_origin_cannot_start_news_refresh or custom_cors_origins_do_not_merge_loopback_defaults or same_origin_request_can_start_news_refresh or non_browser_request_without_origin_can_start_news_refresh or remote_trusted_origin_still_requires_api_key or unconfigured_loopback_origin_cannot_write_llm_settings or default_cors_origins_include_vite_loopback_hosts'
+8 passed
+```
+
+The tests use local/remote `TestClient` ASGI scope fakes and verify configured
+cross-port Vite access, arbitrary loopback rejection before coordinator work,
+same-origin and no-Origin regressions, custom-origin authority, and remote
+`API_AUTH_KEY` enforcement.
+
+### Verification
+
+```text
+pytest agent/tests/test_news_routes.py agent/tests/test_security_auth_api.py agent/tests/test_spa_fallback.py -q
+72 passed, 21 warnings
+
+pytest agent/tests/test_api_infrastructure.py -q -k 'not test_api_server_is_thin_assembler'
+32 passed, 1 deselected, 7 warnings
+
+python -m py_compile agent/src/api/security.py
+ruff check agent/src/api/security.py agent/tests/test_security_auth_api.py agent/tests/test_api_infrastructure.py
+git diff --check
+PASS
+```
+
+`test_api_server_is_thin_assembler` remains a pre-existing unrelated failure:
+the current `api_server.py` has 655 lines while its stale assertion requires
+fewer than 400. It was not changed because it is outside this security-only
+Task 8 scope.
