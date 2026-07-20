@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -36,13 +37,27 @@ class AtomicSnapshotStore:
         self.max_bytes = max_bytes
 
     def read(self) -> NewsSnapshot | None:
-        """Return the current snapshot, or ``None`` before the first write."""
-        if not self.path.exists():
-            return None
+        """Return the current validated snapshot or a stable classification error."""
         try:
-            if self.path.stat().st_size > self.max_bytes:
+            path_stat = self.path.lstat()
+        except FileNotFoundError as exc:
+            raise SnapshotStorageError("snapshot_unavailable", "news snapshot is unavailable") from exc
+        except OSError as exc:
+            logger.warning("news snapshot read rejected: %s", type(exc).__name__)
+            raise SnapshotStorageError("snapshot_corrupt", "news snapshot is corrupt") from exc
+        if not stat.S_ISREG(path_stat.st_mode):
+            raise SnapshotStorageError("snapshot_corrupt", "news snapshot is corrupt")
+
+        fd: int | None = None
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(self.path, flags)
+            opened_stat = os.fstat(fd)
+            if not stat.S_ISREG(opened_stat.st_mode) or opened_stat.st_size > self.max_bytes:
                 raise ValueError("snapshot exceeds maximum size")
-            raw = self.path.read_bytes()
+            with os.fdopen(fd, "rb") as stream:
+                fd = None
+                raw = stream.read(self.max_bytes + 1)
             if len(raw) > self.max_bytes:
                 raise ValueError("snapshot exceeds maximum size")
             data = json.loads(raw)
@@ -51,7 +66,10 @@ class AtomicSnapshotStore:
             return NewsSnapshot.model_validate(data)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValidationError, ValueError, TypeError) as exc:
             logger.warning("news snapshot read rejected: %s", type(exc).__name__)
-            raise SnapshotStorageError("snapshot_unavailable", "news snapshot is unavailable") from exc
+            raise SnapshotStorageError("snapshot_corrupt", "news snapshot is corrupt") from exc
+        finally:
+            if fd is not None:
+                os.close(fd)
 
     def write(self, snapshot: NewsSnapshot) -> None:
         """Durably replace the snapshot without risking an existing good file."""
@@ -63,6 +81,8 @@ class AtomicSnapshotStore:
             fd, tmp_name = tempfile.mkstemp(prefix=f".{self.path.name}.", suffix=".tmp", dir=self.path.parent)
             try:
                 os.fchmod(fd, 0o600)
+                if stat.S_IMODE(os.fstat(fd).st_mode) != 0o600:
+                    raise PermissionError("temporary snapshot file is not private")
                 with os.fdopen(fd, "wb") as stream:
                     stream.write(payload)
                     stream.flush()
@@ -73,8 +93,10 @@ class AtomicSnapshotStore:
             _validate_payload(payload, self.max_bytes)
             os.replace(tmp_name, self.path)
             tmp_name = None
-            os.chmod(self.path, 0o600)
-            self._fsync_directory()
+            try:
+                self._fsync_directory()
+            except OSError:
+                logger.debug("news snapshot directory sync failed after commit", exc_info=True)
         except (OSError, ValidationError, ValueError, TypeError, json.JSONDecodeError) as exc:
             logger.warning("news snapshot write rejected: %s", type(exc).__name__)
             raise SnapshotStorageError("snapshot_write_failed", "news snapshot could not be saved") from exc
@@ -97,7 +119,10 @@ class AtomicSnapshotStore:
         except OSError:
             logger.debug("news snapshot directory fsync unsupported", exc_info=True)
         finally:
-            os.close(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                logger.debug("news snapshot directory close failed", exc_info=True)
 
 
 def _serialize(snapshot: NewsSnapshot, max_bytes: int) -> bytes:

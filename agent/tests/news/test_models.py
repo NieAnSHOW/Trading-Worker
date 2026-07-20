@@ -9,8 +9,10 @@ from src.news.models import (
     FeedItem,
     FeedSource,
     NewsSnapshot,
+    PublicError,
     RefreshAcceptedResponse,
     RefreshStatus,
+    SourceStats,
     SnapshotResponse,
     TrackAi,
     TrackSnapshot,
@@ -34,14 +36,25 @@ def item(track_id: str = "ai") -> FeedItem:
 
 def track(track_id: str, state: str = "fresh") -> TrackSnapshot:
     if state == "unavailable":
-        return TrackSnapshot(track_id=track_id, state=state, generated_at=None, stale=False, items=[], ai=TrackAi())
+        return TrackSnapshot(
+            track_id=track_id,
+            state=state,
+            generated_at=None,
+            stale=False,
+            partial=False,
+            items=[],
+            ai=TrackAi(),
+            source_stats=SourceStats.empty(),
+        )
     return TrackSnapshot(
         track_id=track_id,
         state=state,
         generated_at=NOW,
         stale=state == "stale",
+        partial=False,
         items=[item(track_id)],
         ai=TrackAi(available=True, generated_at=NOW, highlights=["One useful point", "Another useful point", "Third useful point"]),
+        source_stats=SourceStats(endpoint_success_count=1, endpoint_failure_count=0, assignment_success_count=1, assignment_failure_count=0),
     )
 
 
@@ -50,8 +63,7 @@ def snapshot() -> NewsSnapshot:
         schema_version=1,
         generated_at=NOW,
         upstream_commit="d98aa603228f4839fb48859812c63a58ca10cead",
-        source_success_count=1,
-        source_failure_count=0,
+        source_stats=SourceStats(endpoint_success_count=1, endpoint_failure_count=0, assignment_success_count=1, assignment_failure_count=0),
         errors=[],
         tracks=[track(track_id) for track_id in CANONICAL_TRACK_IDS],
     )
@@ -59,21 +71,104 @@ def snapshot() -> NewsSnapshot:
 
 def test_unavailable_track_has_no_generation_time_or_items() -> None:
     with pytest.raises(ValidationError):
-        TrackSnapshot(track_id="ai", state="unavailable", generated_at=NOW, stale=False, items=[], ai=TrackAi())
+        TrackSnapshot(
+            track_id="ai",
+            state="unavailable",
+            generated_at=NOW,
+            stale=False,
+            partial=False,
+            items=[],
+            ai=TrackAi(),
+            source_stats=SourceStats.empty(),
+        )
 
     with pytest.raises(ValidationError):
-        TrackSnapshot(track_id="ai", state="unavailable", generated_at=None, stale=False, items=[item()], ai=TrackAi())
+        TrackSnapshot(
+            track_id="ai",
+            state="unavailable",
+            generated_at=None,
+            stale=False,
+            partial=False,
+            items=[item()],
+            ai=TrackAi(),
+            source_stats=SourceStats.empty(),
+        )
 
-    valid = TrackSnapshot(track_id="ai", state="unavailable", generated_at=None, stale=False, items=[], ai=TrackAi())
+    valid = TrackSnapshot(
+        track_id="ai",
+        state="unavailable",
+        generated_at=None,
+        stale=False,
+        partial=False,
+        items=[],
+        ai=TrackAi(),
+        source_stats=SourceStats.empty(),
+    )
     assert valid.ai.available is False
+
+    with pytest.raises(ValidationError):
+        TrackSnapshot(
+            track_id="ai",
+            state="unavailable",
+            generated_at=None,
+            stale=False,
+            partial=False,
+            items=[],
+            ai=TrackAi(available=True, generated_at=NOW, highlights=["One", "Two", "Three"]),
+            source_stats=SourceStats.empty(),
+        )
 
 
 def test_track_state_must_match_generation_and_stale_flags() -> None:
     with pytest.raises(ValidationError):
-        TrackSnapshot(track_id="ai", state="fresh", generated_at=NOW, stale=True, items=[item()], ai=TrackAi())
+        TrackSnapshot(
+            track_id="ai",
+            state="fresh",
+            generated_at=NOW,
+            stale=True,
+            partial=False,
+            items=[item()],
+            ai=TrackAi(),
+            source_stats=SourceStats.empty(),
+        )
 
     with pytest.raises(ValidationError):
-        TrackSnapshot(track_id="ai", state="stale", generated_at=None, stale=True, items=[item()], ai=TrackAi())
+        TrackSnapshot(track_id="ai", state="stale", generated_at=None, stale=True, partial=False, items=[item()], ai=TrackAi(), source_stats=SourceStats.empty())
+
+
+def test_partial_marks_only_fresh_tracks_with_failed_sources() -> None:
+    fresh_data = track("ai").model_dump()
+    fresh_data["partial"] = True
+    fresh_data["source_stats"]["assignment_failure_count"] = 1
+    fresh = TrackSnapshot.model_validate(fresh_data)
+    assert fresh.partial is True
+
+    stale = track("ai", state="stale").model_dump()
+    stale["partial"] = True
+    with pytest.raises(ValidationError):
+        TrackSnapshot.model_validate(stale)
+
+    unavailable = track("ai", state="unavailable").model_dump()
+    unavailable["partial"] = True
+    with pytest.raises(ValidationError):
+        TrackSnapshot.model_validate(unavailable)
+
+
+def test_source_stats_expose_endpoint_and_assignment_counts_with_bounds() -> None:
+    stats = SourceStats(endpoint_success_count=1, endpoint_failure_count=1, assignment_success_count=2, assignment_failure_count=1)
+    assert stats.assignment_failure_count == 1
+    assert SourceStats.empty().model_dump() == {
+        "endpoint_success_count": 0,
+        "endpoint_failure_count": 0,
+        "assignment_success_count": 0,
+        "assignment_failure_count": 0,
+    }
+
+    with pytest.raises(ValidationError):
+        SourceStats(endpoint_success_count=107, endpoint_failure_count=0, assignment_success_count=0, assignment_failure_count=0)
+
+    with pytest.raises(ValidationError):
+        SourceStats(endpoint_success_count=0, endpoint_failure_count=0, assignment_success_count=100, assignment_failure_count=9)
 
 
 def test_snapshot_requires_canonical_track_ids_in_canonical_order() -> None:
@@ -107,6 +202,47 @@ def test_item_lengths_and_unknown_fields_are_rejected() -> None:
     secret["api_key"] = "must-not-persist"
     with pytest.raises(ValidationError):
         FeedItem.model_validate(secret)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://reader:password@example.com/feed",
+        "https://example.com/feed?access_token=secret-value",
+        "https://example.com/feed?client_secret=secret-value",
+        "https://example.com/feed#authorization=Bearer%20secret-value",
+        "https://example.com/feed?continue=sk-secret-value",
+    ],
+)
+def test_feed_urls_reject_embedded_credentials_and_secret_parameters(url: str) -> None:
+    with pytest.raises(ValidationError):
+        FeedSource(id="source-1", name="Source", url=url)
+
+    data = item().model_dump()
+    data["url"] = url
+    with pytest.raises(ValidationError):
+        FeedItem.model_validate(data)
+
+
+def test_feed_urls_allow_public_http_urls() -> None:
+    assert FeedSource(id="source-1", name="Source", url="https://example.com/feed?topic=markets").url.startswith("https://")
+    data = item().model_dump()
+    data["url"] = "http://example.com/article#section-2"
+    assert FeedItem.model_validate(data).url.startswith("http://")
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Authorization: Bearer secret-value",
+        "request failed for https://api.openai.com/v1/chat/completions",
+        "provider=anthropic rejected credential",
+        "upstream returned sk-secret-value",
+    ],
+)
+def test_public_error_rejects_provider_and_credential_like_messages(message: str) -> None:
+    with pytest.raises(ValidationError):
+        PublicError(code="upstream_failed", message=message)
 
 
 def test_snapshot_response_and_refresh_acceptance_expose_only_public_state() -> None:

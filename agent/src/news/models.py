@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 from typing import Literal
+from urllib.parse import unquote_plus, urlsplit
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -23,6 +25,18 @@ CANONICAL_TRACK_IDS = (
     "macro",
     "science",
 )
+MAX_ENDPOINTS = 106
+MAX_ASSIGNMENTS = 108
+_SENSITIVE_PARAMETER_NAMES = frozenset(
+    {"access_token", "api_key", "apikey", "authorization", "credential", "credentials", "key", "password", "secret", "token"}
+)
+_SENSITIVE_ERROR_PATTERN = re.compile(
+    r"(?:\b(?:api[ _-]?key|access[ _-]?token|authorization|credential|password|secret|token)\b\s*[:=]"
+    r"|\bbearer\s+\S+|\bsk-[a-z0-9_-]{4,}\b|\bprovider\s*[:=]|https?://"
+    r"|\b(?:openai|anthropic|deepseek|gemini|groq|dashscope|zhipu|moonshot|minimax|ollama)\b)",
+    re.IGNORECASE,
+)
+_SENSITIVE_URL_VALUE_PATTERN = re.compile(r"(?:\bbearer\s+\S+|\bsk-[a-z0-9_-]{4,}\b)", re.IGNORECASE)
 
 
 class _StrictModel(BaseModel):
@@ -35,10 +49,40 @@ def _validate_utc(value: datetime) -> datetime:
     return value
 
 
+def _is_sensitive_parameter(name: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "_", name.lower()).strip("_")
+    return normalized in _SENSITIVE_PARAMETER_NAMES or bool(
+        {"authorization", "credential", "key", "password", "secret", "token"}.intersection(normalized.split("_"))
+    )
+
+
+def _validate_public_http_url(value: str) -> str:
+    try:
+        parsed = urlsplit(value)
+    except ValueError as exc:
+        raise ValueError("URL must be a public HTTP(S) URL") from exc
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username is not None or parsed.password is not None:
+        raise ValueError("URL must be a public HTTP(S) URL")
+    for component in (parsed.query, parsed.fragment):
+        for segment in component.split("&"):
+            name, separator, parameter_value = segment.partition("=")
+            name = unquote_plus(name)
+            if name and _is_sensitive_parameter(name):
+                raise ValueError("URL must not contain credential parameters")
+            if separator and _SENSITIVE_URL_VALUE_PATTERN.search(unquote_plus(parameter_value)):
+                raise ValueError("URL must not contain credential values")
+    return value
+
+
 class FeedSource(_StrictModel):
     id: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=200)
     url: str = Field(min_length=1, max_length=2048)
+
+    @field_validator("url")
+    @classmethod
+    def url_is_public(cls, value: str) -> str:
+        return _validate_public_http_url(value)
 
 
 class FeedItem(_StrictModel):
@@ -57,6 +101,23 @@ class FeedItem(_StrictModel):
     @classmethod
     def published_at_is_utc(cls, value: datetime | None) -> datetime | None:
         return _validate_utc(value) if value is not None else value
+
+    @field_validator("url")
+    @classmethod
+    def url_is_public(cls, value: str) -> str:
+        return _validate_public_http_url(value)
+
+
+class PublicError(_StrictModel):
+    code: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    message: str = Field(min_length=1, max_length=200)
+
+    @field_validator("message")
+    @classmethod
+    def message_is_safe(cls, value: str) -> str:
+        if _SENSITIVE_ERROR_PATTERN.search(value):
+            raise ValueError("public error message must not contain provider or credential details")
+        return value
 
 
 class TrackAi(_StrictModel):
@@ -80,9 +141,23 @@ class TrackAi(_StrictModel):
         return self
 
 
-class PublicError(_StrictModel):
-    code: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
-    message: str = Field(min_length=1, max_length=200)
+class SourceStats(_StrictModel):
+    endpoint_success_count: int = Field(ge=0, le=MAX_ENDPOINTS)
+    endpoint_failure_count: int = Field(ge=0, le=MAX_ENDPOINTS)
+    assignment_success_count: int = Field(ge=0, le=MAX_ASSIGNMENTS)
+    assignment_failure_count: int = Field(ge=0, le=MAX_ASSIGNMENTS)
+
+    @classmethod
+    def empty(cls) -> "SourceStats":
+        return cls(endpoint_success_count=0, endpoint_failure_count=0, assignment_success_count=0, assignment_failure_count=0)
+
+    @model_validator(mode="after")
+    def validate_totals(self) -> "SourceStats":
+        if self.endpoint_success_count + self.endpoint_failure_count > MAX_ENDPOINTS:
+            raise ValueError("endpoint counts exceed the endpoint catalog")
+        if self.assignment_success_count + self.assignment_failure_count > MAX_ASSIGNMENTS:
+            raise ValueError("assignment counts exceed the assignment catalog")
+        return self
 
 
 class TrackSnapshot(_StrictModel):
@@ -92,8 +167,10 @@ class TrackSnapshot(_StrictModel):
     state: Literal["fresh", "stale", "unavailable"]
     generated_at: datetime | None = None
     stale: bool = False
+    partial: bool = False
     items: list[FeedItem] = Field(default_factory=list, max_length=100)
     ai: TrackAi
+    source_stats: SourceStats
 
     @field_validator("generated_at")
     @classmethod
@@ -104,21 +181,28 @@ class TrackSnapshot(_StrictModel):
     def validate_state(self) -> "TrackSnapshot":
         if any(item.track_id != self.track_id for item in self.items):
             raise ValueError("track items must match the track id")
-        if self.state == "fresh" and self.generated_at is not None and not self.stale:
+        has_source_failure = self.source_stats.endpoint_failure_count > 0 or self.source_stats.assignment_failure_count > 0
+        if self.state == "fresh" and self.generated_at is not None and not self.stale and self.partial == has_source_failure:
             return self
-        if self.state == "stale" and self.generated_at is not None and self.stale:
+        if self.state == "stale" and self.generated_at is not None and self.stale and not self.partial:
             return self
-        if self.state == "unavailable" and self.generated_at is None and not self.stale and not self.items:
+        if (
+            self.state == "unavailable"
+            and self.generated_at is None
+            and not self.stale
+            and not self.partial
+            and not self.items
+            and not self.ai.available
+        ):
             return self
-        raise ValueError("track state does not match generated_at, stale, and items")
+        raise ValueError("track state does not match generated_at, stale, partial, items, and AI availability")
 
 
 class NewsSnapshot(_StrictModel):
     schema_version: Literal[1]
     generated_at: datetime
     upstream_commit: str = Field(min_length=1, max_length=128)
-    source_success_count: int = Field(ge=0)
-    source_failure_count: int = Field(ge=0)
+    source_stats: SourceStats
     errors: list[PublicError] = Field(default_factory=list, max_length=200)
     tracks: list[TrackSnapshot] = Field(min_length=len(CANONICAL_TRACK_IDS), max_length=len(CANONICAL_TRACK_IDS))
 
