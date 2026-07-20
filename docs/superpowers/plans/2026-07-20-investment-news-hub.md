@@ -576,6 +576,7 @@ git commit -s -m "feat(news): coordinate single background refresh"
 - Create: `agent/src/api/news_routes.py`
 - Create: `agent/tests/test_news_routes.py`
 - Modify: `agent/api_server.py`
+- Modify: `agent/src/api/scheduled_routes.py` (FastAPI 0.115+ 的既有 204 无响应体兼容性前提，确保 API server 可加载并执行本任务的集成测试)
 - Modify: `agent/tests/test_security_auth_api.py`
 - Modify: `agent/tests/test_spa_fallback.py`
 
