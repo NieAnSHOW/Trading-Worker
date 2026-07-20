@@ -225,9 +225,12 @@ describe("api request helper", () => {
     expect(() => parseNewsSnapshotResponse(payload)).toThrow(expect.objectContaining({ name: "ApiError", status: 200 }));
   });
 
-  it("rejects invalid UTC calendar dates", async () => {
+  it.each([
+    "2026-02-30T10:00:00Z",
+    "0000-01-01T10:00:00Z",
+  ])("rejects invalid UTC calendar dates: %s", async (generatedAt) => {
     const payload = validNewsSnapshot();
-    payload.snapshot.generated_at = "2026-02-30T10:00:00Z";
+    payload.snapshot.generated_at = generatedAt;
     const { parseNewsSnapshotResponse } = await loadApiModule();
 
     expect(() => parseNewsSnapshotResponse(payload)).toThrow(expect.objectContaining({ name: "ApiError", status: 200 }));

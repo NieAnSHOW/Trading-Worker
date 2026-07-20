@@ -99,6 +99,13 @@ same review also identified JavaScript's normalization of invalid calendar
 dates; strict UTC date parsing now rejects values such as February 30. The
 focused API suite passed with `18 passed`.
 
+## Year-Zero Follow-up
+
+The closing review found that JavaScript accepts year zero even though the
+backend's Python `datetime` rejects it. A `0000-01-01T10:00:00Z` regression
+first failed, then the UTC parser added the backend-compatible lower year bound
+of 1. The focused API suite passed with `19 passed`.
+
 ## Scope
 
 No page, router, layout navigation, global store, or polling hook was added;

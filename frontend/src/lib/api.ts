@@ -210,6 +210,7 @@ function newsUtcDate(value: unknown, nullable = false): string | null {
   const date = newsString(value, 1, 64);
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+]00:00)$/.exec(date);
   if (!match) invalidNewsResponse();
+  if (Number(match[1]) < 1) invalidNewsResponse();
   const parsed = new Date(date);
   if (
     Number.isNaN(parsed.getTime()) ||
