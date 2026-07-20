@@ -338,7 +338,7 @@ git commit -s -m "feat(news): add bounded public feed transport"
 - Consumes: Task 3 的受限 feed bytes 与 SourceAssignment。
 - Produces: `parse_feed(content: bytes, assignment: SourceAssignment) -> tuple[RawFeedItem, ...]`；导入模块时不要求 `defusedxml` 已安装。
 
-- [ ] **Task 4 Step 1: 写 RSS/Atom 与恶意 XML 失败测试**
+- [x] **Task 4 Step 1: 写 RSS/Atom 与恶意 XML 失败测试**
 
 ```python
 def test_parse_atom_keeps_missing_optional_fields_as_none() -> None:
@@ -352,21 +352,21 @@ def test_rejects_dtd_and_entities() -> None:
         parse_feed(load_fixture("malicious_dtd.xml"), make_assignment("security"))
 ```
 
-- [ ] **Task 4 Step 2: 运行 RED**
+- [x] **Task 4 Step 2: 运行 RED**
 
 Run: `pytest agent/tests/news/test_feeds.py -q`
 
 Expected: FAIL，因为 parser 与 fixtures 尚不存在。
 
-- [ ] **Task 4 Step 3: 实现延迟导入和结构解析**
+- [x] **Task 4 Step 3: 实现延迟导入和结构解析**
 
 `defusedxml.ElementTree` 只能在 `parse_feed()` 内导入；`ImportError` 转为 `FeedParseError("parser_unavailable")`。支持 RSS `item` 与 Atom namespaced `entry`，不执行外部实体或 XSLT。
 
-- [ ] **Task 4 Step 4: 实现纯文本化与字段边界**
+- [x] **Task 4 Step 4: 实现纯文本化与字段边界**
 
 用 `HTMLParser` 子类收集文本节点、`html.unescape`、Unicode NFKC 和空白折叠；标题截断 300、摘要截断 1000。只接受非空标题与 HTTP(S) 原文 URL，缺失摘要/时间保持 `None`。
 
-- [ ] **Task 4 Step 5: 运行 GREEN 与 Tier 0 导入证明**
+- [x] **Task 4 Step 5: 运行 GREEN 与 Tier 0 导入证明**
 
 Run:
 
@@ -377,7 +377,7 @@ python -c "import sys; sys.modules['defusedxml'] = None; import src.news.feeds"
 
 Expected: pytest PASS；模块导入命令退出 0，证明装配期不加载 parser。
 
-- [ ] **Task 4 Step 6: 提交**
+- [x] **Task 4 Step 6: 提交**
 
 ```bash
 git add agent/src/news/feeds.py agent/tests/news/fixtures agent/tests/news/test_feeds.py openspec/changes/investment-news-hub/tasks.md
