@@ -20,10 +20,6 @@ MAX_TRACK_ITEMS = 100
 WINDOW = timedelta(days=7)
 
 
-class NoTrackUpdatedError(RuntimeError):
-    """Raised when a first-run refresh produces no usable track data."""
-
-
 @dataclass(frozen=True)
 class AssignmentItems:
     """The normalized result for one catalog assignment."""
@@ -79,8 +75,6 @@ def build_track_candidates(
         else:
             tracks.append(_unavailable_track(track_id, stats_by_track[track_id]))
 
-    if not updated_track_ids and not any(track.state == "stale" for track in tracks):
-        raise NoTrackUpdatedError("no_track_updated")
     return TrackBuildResult(tracks=tuple(tracks), updated_track_ids=frozenset(updated_track_ids))
 
 

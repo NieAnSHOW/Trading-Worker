@@ -3,12 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
 
-import pytest
-
 from src.news.catalog import NewsCatalog, SourceAssignment
 from src.news.feeds import RawFeedItem
 from src.news.models import CANONICAL_TRACK_IDS, FeedItem, FeedSource, NewsSnapshot, SourceStats, TrackAi, TrackSnapshot
-from src.news.pipeline import AssignmentItems, NoTrackUpdatedError, build_track_candidates
+from src.news.pipeline import AssignmentItems, build_track_candidates
 
 
 NOW = datetime(2026, 7, 20, 12, tzinfo=timezone.utc)
@@ -216,9 +214,13 @@ def test_pipeline_merges_current_and_old_items_then_marks_partial() -> None:
     assert "ai" in result.updated_track_ids
 
 
-def test_pipeline_rejects_when_no_track_has_current_items() -> None:
-    with pytest.raises(NoTrackUpdatedError, match="^no_track_updated$"):
-        build_track_candidates(catalog(), [], make_snapshot_with_tracks([]), NOW)
+def test_pipeline_returns_all_unavailable_tracks_when_no_current_or_previous_items() -> None:
+    result = build_track_candidates(catalog(), [], make_snapshot_with_tracks([]), NOW)
+
+    assert len(result.tracks) == len(CANONICAL_TRACK_IDS) == 12
+    assert [track.track_id for track in result.tracks] == list(CANONICAL_TRACK_IDS)
+    assert all(track.state == "unavailable" and track.items == [] for track in result.tracks)
+    assert result.updated_track_ids == frozenset()
 
 
 def test_pipeline_output_is_stable_with_tie_breakers() -> None:
