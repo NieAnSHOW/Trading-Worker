@@ -789,7 +789,7 @@ git commit -s -m "feat(news): manage snapshot refresh lifecycle"
 - Consumes: Task 10 `useNews()` 与 Task 9 locale keys。
 - Produces: 懒加载 `/news` 页面、侧栏“投资资讯”入口和响应式可访问 UI。
 
-- [ ] **Task 11 Step 1: 写路由、赛道和安全链接失败测试**
+- [x] **Task 11 Step 1: 写路由、赛道和安全链接失败测试**
 
 ```typescript
 it("switches tracks without changing refresh scope", async () => {
@@ -808,25 +808,25 @@ it("does not render non-http article urls as links", () => {
 
 覆盖 12 desktop tabs、mobile select、3-5 要点、中文标题优先、缺失摘要/时间、stale/unavailable/partial/AI unavailable、空快照、刷新进度和整体失败。`News.layout.test.tsx` 断言根内容 `min-w-0`、tablist `overflow-x-auto`、长标题 `break-words`、desktop/mobile 控件互斥 class，作为静态布局契约。用 `npm install --save-dev @playwright/test` 写入 package/lock，并创建只针对 `/news` 的 Chromium 配置；E2E 通过 `page.route("**/news-api/**")` 返回固定 snapshot/status fixture，禁止访问真实后端、feed 或 LLM。
 
-- [ ] **Task 11 Step 2: 运行 RED**
+- [x] **Task 11 Step 2: 运行 RED**
 
 Run: `cd frontend && npx vitest run src/pages/__tests__/News.test.tsx src/pages/__tests__/News.layout.test.tsx src/components/layout/__tests__/Layout.test.tsx`
 
 Expected: FAIL，因为页面、路由与导航尚不存在。
 
-- [ ] **Task 11 Step 3: 实现稳定响应式布局**
+- [x] **Task 11 Step 3: 实现稳定响应式布局**
 
 桌面使用固定高度、横向滚动的 `role="tablist"`；窄屏使用 `<select>`。刷新按钮使用 Lucide `RefreshCw`、固定尺寸和 tooltip/accessible label；列表为 unframed 工作台布局，不嵌套卡片。
 
-- [ ] **Task 11 Step 4: 实现安全内容和外链**
+- [x] **Task 11 Step 4: 实现安全内容和外链**
 
 React 仅渲染文本。显示标题时使用 `title_zh || title_original`；URL 通过 `new URL()` 且 protocol 为 `http:`/`https:` 才渲染 `<a target="_blank" rel="noopener noreferrer">`。
 
-- [ ] **Task 11 Step 5: 接入 router 与 Layout**
+- [x] **Task 11 Step 5: 接入 router 与 Layout**
 
 在 `router.tsx` 增加 lazy `News` 与 `{ path: "/news", element: wrap(News) }`；在 Layout 工作区导航增加 Lucide `Newspaper`、`t("layout.news")` 与 active 判定。不得修改 Agent store。
 
-- [ ] **Task 11 Step 6: 运行 GREEN 与前端构建**
+- [x] **Task 11 Step 6: 运行 GREEN 与前端构建**
 
 Run:
 
@@ -838,7 +838,7 @@ npm run build
 
 Expected: tests PASS；TypeScript 与 Vite build 退出 0，无文本溢出类型错误。
 
-- [ ] **Task 11 Step 7: 在真实浏览器验证两个 viewport**
+- [x] **Task 11 Step 7: 在真实浏览器验证两个 viewport**
 
 `playwright.config.ts` 明确设置 `testDir: "./e2e"`、`use.baseURL: "http://127.0.0.1:5899"`，以及 `webServer: { command: "npm run dev -- --host 127.0.0.1", url: "http://127.0.0.1:5899", reuseExistingServer: !process.env.CI }`。`news-responsive.spec.ts` 对 `390x844` 和 `1440x900` 参数化运行：断言 `document.documentElement.scrollWidth <= window.innerWidth`；用 `locator.boundingBox()` 检查赛道控件、刷新按钮、要点和第一条资讯两两不相交。所有 evidence 路径使用 `path.resolve(process.cwd(), "../docs/superpowers/reviews")` 从 `frontend` cwd 定位仓库根；测试启动时先运行 `mkdirSync(path.join(evidenceRoot, "assets"), { recursive: true })`，再把截图写入 `assets/investment-news-mobile.png` 与 `assets/investment-news-desktop.png`，afterAll 写入 `2026-07-20-investment-news-hub-viewport-evidence.md`。
 
@@ -852,7 +852,7 @@ npx playwright test e2e/news-responsive.spec.ts
 
 Expected: 两个 viewport PASS，生成两张非空截图与一份 evidence Markdown；任一失败先修复再提交。
 
-- [ ] **Task 11 Step 8: 提交**
+- [x] **Task 11 Step 8: 提交**
 
 ```bash
 git add frontend/src/pages/News.tsx frontend/src/pages/__tests__/News.test.tsx frontend/src/pages/__tests__/News.layout.test.tsx frontend/e2e/news-responsive.spec.ts frontend/playwright.config.ts frontend/package.json frontend/package-lock.json frontend/src/router.tsx frontend/src/components/layout/Layout.tsx frontend/src/components/layout/__tests__/Layout.test.tsx openspec/changes/investment-news-hub/tasks.md
