@@ -261,7 +261,7 @@ git commit -s -m "feat(news): add validated atomic snapshot storage"
 - Consumes: Task 1 `FeedEndpoint`。
 - Produces: `PublicFeedClient(resolver: Resolver, transport: httpx.AsyncBaseTransport | None = None)` 与 `PublicFeedClient.fetch(endpoint: FeedEndpoint) -> EndpointFetchResult`，结果只含 endpoint ID、状态、受限 bytes 与稳定错误码。
 
-- [ ] **Task 3 Step 1: 写 SSRF、IP 固定和资源上限失败测试**
+- [x] **Task 3 Step 1: 写 SSRF、IP 固定和资源上限失败测试**
 
 ```python
 def test_request_connects_to_validated_ip_with_original_host_and_sni() -> None:
@@ -281,13 +281,13 @@ def test_request_connects_to_validated_ip_with_original_host_and_sni() -> None:
 
 再覆盖 loopback/private/link-local/reserved、URL credentials、`javascript:`、环境 proxy 不生效、第四跳重定向、2 MiB+1 字节、5/15 timeout 和并发峰值 16。
 
-- [ ] **Task 3 Step 2: 运行 RED**
+- [x] **Task 3 Step 2: 运行 RED**
 
 Run: `pytest agent/tests/news/test_network.py -q`
 
 Expected: FAIL，因为安全 transport 尚不存在。
 
-- [ ] **Task 3 Step 3: 实现解析、验证与固定连接**
+- [x] **Task 3 Step 3: 实现解析、验证与固定连接**
 
 ```python
 def is_public_ip(value: str) -> bool:
@@ -308,17 +308,17 @@ def pinned_request(method: str, logical_url: httpx.URL, ip: str) -> httpx.Reques
 
 每跳重新解析 logical URL；`AsyncClient` 使用 `trust_env=False`、`follow_redirects=False`、`Limits(max_connections=16, max_keepalive_connections=0)` 和 `Timeout(connect=5, read=15, write=5, pool=5)`。
 
-- [ ] **Task 3 Step 4: 实现流式读取与 endpoint 隔离**
+- [x] **Task 3 Step 4: 实现流式读取与 endpoint 隔离**
 
 用 64 KiB chunk 累计，超过 2 MiB 立即关闭响应并返回 `response_too_large`。所有异常映射为固定错误码，只记录 endpoint ID 与异常类型，不记录异常 message。Task 3 只验证单 endpoint fetch；106 endpoint 去重编排由 Task 7 测试证明。
 
-- [ ] **Task 3 Step 5: 运行 GREEN**
+- [x] **Task 3 Step 5: 运行 GREEN**
 
 Run: `pytest agent/tests/news/test_network.py -q`
 
 Expected: PASS，并证明 transport 实际连接已验证 IP、重定向与大小限制均生效。
 
-- [ ] **Task 3 Step 6: 提交**
+- [x] **Task 3 Step 6: 提交**
 
 ```bash
 git add agent/src/news/network.py agent/tests/news/test_network.py
