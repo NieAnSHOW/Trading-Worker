@@ -93,6 +93,21 @@ def test_malicious_dtd_is_rejected_without_expansion() -> None:
         parse_feed((FIXTURES / "malicious_dtd.xml").read_bytes(), ASSIGNMENT)
 
 
+def test_valid_cdata_that_mentions_dtd_is_not_treated_as_a_declaration() -> None:
+    from src.news.feeds import parse_feed
+
+    payload = b"""<rss><channel><item>
+      <title>Security update</title>
+      <link>https://news.example/security</link>
+      <description><![CDATA[The string <!DOCTYPE rss> is not XML markup here.]]></description>
+    </item></channel></rss>"""
+
+    items = parse_feed(payload, ASSIGNMENT)
+
+    assert len(items) == 1
+    assert items[0].summary == "The string is not XML markup here."
+
+
 def test_xslt_processing_instruction_is_rejected() -> None:
     from src.news.feeds import FeedParseError, parse_feed
 

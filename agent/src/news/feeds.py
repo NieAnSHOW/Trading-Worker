@@ -24,6 +24,7 @@ _FORBIDDEN_XML_MARKERS = (
     b"http://www.w3.org/1999/xsl/transform",
     b"<xsl:",
 )
+_CDATA_OR_COMMENT = re.compile(rb"<!\[CDATA\[.*?\]\]>|<!--.*?-->", re.DOTALL)
 
 
 class FeedParseError(ValueError):
@@ -50,7 +51,7 @@ class _TextExtractor(HTMLParser):
 
 def parse_feed(payload: bytes, source: SourceAssignment) -> tuple[RawFeedItem, ...]:
     """Parse an untrusted RSS or Atom response without fetching linked content."""
-    if any(marker in payload.lower() for marker in _FORBIDDEN_XML_MARKERS):
+    if _contains_forbidden_xml_markup(payload):
         raise FeedParseError("invalid_xml")
 
     try:
@@ -71,6 +72,12 @@ def parse_feed(payload: bytes, source: SourceAssignment) -> tuple[RawFeedItem, .
         candidates = tuple(element for element in root.iter() if _local_name(element.tag) == "entry")
         return tuple(item for candidate in candidates if (item := _atom_item(candidate, source)) is not None)
     raise FeedParseError("invalid_xml")
+
+
+def _contains_forbidden_xml_markup(payload: bytes) -> bool:
+    """Ignore declaration-like text in CDATA or comments before prefiltering."""
+    markup = _CDATA_OR_COMMENT.sub(b"", payload).lower()
+    return any(marker in markup for marker in _FORBIDDEN_XML_MARKERS)
 
 
 def _rss_item(element: Any, source: SourceAssignment) -> RawFeedItem | None:
