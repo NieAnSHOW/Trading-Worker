@@ -79,6 +79,14 @@ credential values. The URL regression tests first failed because all four
 URLs were accepted; after the parser change, `npx vitest run
 src/lib/__tests__/api.test.ts` passed with `13 passed`.
 
+## Review Contract Follow-up
+
+An independent review found that WHATWG `URL` normalizes
+`https:example.com/article`, while the backend's `urlsplit` rejects it for
+lacking a raw authority. A regression test first showed the frontend accepting
+that URL. The parser now requires a non-empty raw `http(s)://authority` before
+constructing `URL`, and the focused API suite passed with `14 passed`.
+
 ## Scope
 
 No page, router, layout navigation, global store, or polling hook was added;

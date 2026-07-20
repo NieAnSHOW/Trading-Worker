@@ -238,6 +238,7 @@ function newsPublicUrlComponent(value: string): void {
 function newsHttpUrl(value: unknown): string {
   const url = newsString(value, 1, 2048);
   try {
+    if (!/^https?:\/\/[^/?#]+/i.test(url)) invalidNewsResponse();
     const parsed = new URL(url);
     if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname || parsed.username || parsed.password) {
       invalidNewsResponse();

@@ -196,6 +196,14 @@ describe("api request helper", () => {
     expect(() => parseNewsSnapshotResponse(payload)).toThrow(expect.objectContaining({ name: "ApiError", status: 200 }));
   });
 
+  it("rejects article URLs without an explicit HTTP(S) authority", async () => {
+    const payload = validNewsSnapshot();
+    payload.snapshot.tracks[0].items[0].url = "https:example.com/article";
+    const { parseNewsSnapshotResponse } = await loadApiModule();
+
+    expect(() => parseNewsSnapshotResponse(payload)).toThrow(expect.objectContaining({ name: "ApiError", status: 200 }));
+  });
+
   it.each([
     "https://example.com/article?access_token=secret-value",
     "https://example.com/article#authorization=Bearer%20secret-value",
