@@ -394,7 +394,7 @@ git commit -s -m "feat(news): parse untrusted rss and atom feeds"
 - Consumes: Task 4 `RawFeedItem`、Task 2 旧 `NewsSnapshot`、Task 1 catalog。
 - Produces: `build_track_candidates(catalog: NewsCatalog, current: Sequence[AssignmentItems], previous: NewsSnapshot | None, now: datetime) -> TrackBuildResult`，其中 `TrackBuildResult.tracks` 恰好 12 个，`updated_track_ids: frozenset[str]` 决定是否进入 LLM。
 
-- [ ] **Task 5 Step 1: 写确定性处理和回退失败测试**
+- [x] **Task 5 Step 1: 写确定性处理和回退失败测试**
 
 ```python
 def test_track_without_current_items_reuses_old_track_as_stale() -> None:
@@ -414,27 +414,27 @@ def test_first_run_missing_track_is_unavailable() -> None:
 
 再覆盖 7 天窗口、无时间条目、每 endpoint 6 条、赛道 100 条、过滤词、URL 去 fragment/default port、赛道内去重、partial 标记和 12 赛道均无更新。
 
-- [ ] **Task 5 Step 2: 运行 RED**
+- [x] **Task 5 Step 2: 运行 RED**
 
 Run: `pytest agent/tests/news/test_pipeline.py -q`
 
 Expected: FAIL，因为 pipeline 尚不存在。
 
-- [ ] **Task 5 Step 3: 实现确定性 pipeline**
+- [x] **Task 5 Step 3: 实现确定性 pipeline**
 
 处理顺序固定为：字段规范化、assignment 过滤、7 天窗口、endpoint 内去重、赛道内去重、发布时间降序、完整度/source ID/stable ID 决胜、数量裁剪。无时间条目排在有时间条目之后。
 
-- [ ] **Task 5 Step 4: 实现三态合并与提交判定**
+- [x] **Task 5 Step 4: 实现三态合并与提交判定**
 
 本次赛道至少一个有效条目时设 `fresh`，与旧条目按 ID 合并至 100 条；本次无有效条目且有旧数据时原样复用并设 `stale`；没有旧数据时设 `unavailable`。pipeline 始终返回 12 个赛道及 `updated_track_ids`；当该集合为空时，由 Task 7 的协调器以 `no_track_updated` 结束刷新，在调用 LLM 或存储前拒绝提交。
 
-- [ ] **Task 5 Step 5: 运行 GREEN**
+- [x] **Task 5 Step 5: 运行 GREEN**
 
 Run: `pytest agent/tests/news/test_pipeline.py -q`
 
 Expected: PASS，且输出顺序在重复执行时字节级稳定。
 
-- [ ] **Task 5 Step 6: 提交**
+- [x] **Task 5 Step 6: 提交**
 
 ```bash
 git add agent/src/news/pipeline.py agent/tests/news/test_pipeline.py
