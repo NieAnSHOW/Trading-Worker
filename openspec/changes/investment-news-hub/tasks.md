@@ -2,7 +2,7 @@
 
 - [x] 1.1 从 `https://github.com/simonlin1212/investment-news` 提交 `d98aa603228f4839fb48859812c63a58ca10cead` 导入 108 个 RSS/Atom 赛道来源映射、106 个唯一 feed 端点、12 个稳定赛道 ID 和过滤规则，并记录规范仓库 URL 与完整提交元数据
 - [x] 1.2 生成覆盖 URL、赛道映射和过滤参数的 golden manifest/hash，并添加配置不变量测试，验证 108 个唯一 `(track_id, url)` 映射、106 个唯一网络端点、12 个赛道、映射 ID 唯一性、两个已知跨赛道复用 URL、映射完整性及固定提交标识
-- [ ] 1.3 将上游 MIT 版权与许可声明放入随资讯模块分发的 notices 路径，验证源码、Python sdist/wheel 与桌面 assemble 资源均包含声明；若采用新的 RSS/Atom 解析依赖，同步项目依赖、桌面 Tier 0 清单和第三方许可材料并运行 Tier 0 smoke
+- [x] 1.3 将上游 MIT 版权与许可声明放入随资讯模块分发的 notices 路径，验证源码、Python sdist/wheel 与桌面 assemble 资源均包含声明；若采用新的 RSS/Atom 解析依赖，同步项目依赖、桌面 Tier 0 清单和第三方许可材料并运行 Tier 0 smoke
 - [x] 1.4 建立资讯领域模块与 Pydantic 模型，定义版本化组合快照、标准化条目、每赛道 `generated_at`/`stale`/可用状态、AI 状态、来源结果和仅驻内存的刷新任务状态
 
 ## 2. 快照存储
@@ -43,8 +43,8 @@
 
 <!-- User decision 2026-07-20: manual-verification pause was superseded later that day. Automated TDD, test execution, and thorough review are resumed. Task 8 continues with the unresolved global unsafe-Origin middleware gap. -->
 
-- [ ] 7.1 运行资讯后端目标测试、API 安全与 SPA fallback 测试，确认测试不访问真实网络或真实 LLM
-- [ ] 7.2 运行前端 Vitest 目标测试和 `npm run build`，修复类型、路由、开发代理、国际化与生产构建问题
-- [ ] 7.3 使用临时用户数据目录完成端到端降级验证：无快照、部分来源失败、LLM 不可用、刷新失败保留旧快照和进程重启
-- [ ] 7.4 验证 MIT notice 实际进入 Python sdist/wheel 与桌面 assemble 资源；新增解析依赖时运行 Tier 0 smoke
+- [x] 7.1 运行资讯后端目标测试、API 安全与 SPA fallback 测试，确认测试不访问真实网络或真实 LLM
+- [x] 7.2 运行前端 Vitest 目标测试和 `npm run build`，修复类型、路由、开发代理、国际化与生产构建问题
+- [x] 7.3 使用临时用户数据目录完成端到端降级验证：无快照、部分来源失败、LLM 不可用、刷新失败保留旧快照和进程重启
+- [x] 7.4 验证 MIT notice 实际进入 Python sdist/wheel 与桌面 assemble 资源；新增解析依赖时运行 Tier 0 smoke
 - [ ] 7.5 由独立 reviewer/verifier 对照 spec 检查免费范围、108 映射/106 端点/12 赛道配置与 manifest、单服务、鉴权、XML/链接协议、密钥边界、每赛道要点、无全文/无历史和 MIT notices，并处理所有阻塞发现

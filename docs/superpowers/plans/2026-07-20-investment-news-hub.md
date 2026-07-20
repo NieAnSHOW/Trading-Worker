@@ -872,21 +872,21 @@ git commit -s -m "feat(news): add investment news workspace"
 - Consumes: Tasks 1-11 的完整模块。
 - Produces: 可审计的 wheel/sdist/desktop notice、无真实网络的端到端降级证据和已勾选 OpenSpec tasks。
 
-- [ ] **Task 12 Step 1: 写发布物与端到端失败测试**
+- [x] **Task 12 Step 1: 写发布物与端到端失败测试**
 
 `test_distribution.py` 在 `NEWS_DIST_DIR` 缺失时用 `pytest.skip("NEWS_DIST_DIR is required for archive verification")`，从而不破坏普通目标/全量测试；变量存在时用 `zipfile` 检查 wheel、`tarfile` 检查 sdist，分别断言 `upstream_manifest.json`、`.sha256`、`THIRD_PARTY_NOTICES.md` 存在，并将 archive 内 notice 与仓库 notice 的完整 UTF-8 内容和 SHA-256 比较，证明完整 MIT 条款而非仅版权行进入发布物。另写 `test_archives_from_env_rejects_empty_directory()` 直接调用 helper，证明显式空目录会失败。`test_end_to_end.py` 使用临时 data dir、MockTransport 与 FakeLLM 完成：首次部分赛道 unavailable、第二次失败赛道 stale、LLM 不可用仍提交、12 赛道无更新不改文件、重建 coordinator 后 status 为 idle。
 
-- [ ] **Task 12 Step 2: 运行 RED**
+- [x] **Task 12 Step 2: 运行 RED**
 
 Run: `NEWS_DIST_DIR="$(mktemp -d)" pytest agent/tests/news/test_distribution.py agent/tests/news/test_end_to_end.py -q`
 
 Expected: FAIL，直到发布断言和完整依赖注入路径补齐。
 
-- [ ] **Task 12 Step 3: 补齐分发与 Tier 0 smoke 契约**
+- [x] **Task 12 Step 3: 补齐分发与 Tier 0 smoke 契约**
 
 在 `smoke_tier0.py` 导入 `api_server.app` 后断言 `/news-api/snapshot` 路由存在，但不调用 parser；保持 Tier 0 requirements 不新增 defusedxml。`test_distribution.py` 的 `archives_from_env()` 必须验证目录存在、恰好找到至少一个 `.whl` 和一个 `.tar.gz`，否则用明确 assertion 失败，不自动猜测 `dist/`。
 
-- [ ] **Task 12 Step 4: 运行后端目标测试**
+- [x] **Task 12 Step 4: 运行后端目标测试**
 
 Run:
 
@@ -898,7 +898,7 @@ python -m py_compile agent/api_server.py
 
 Expected: 全部 PASS；任何未 await coroutine 产生的 `RuntimeWarning` 会被提升为失败。
 
-- [ ] **Task 12 Step 5: 运行前端测试与生产构建**
+- [x] **Task 12 Step 5: 运行前端测试与生产构建**
 
 Run:
 
@@ -910,7 +910,7 @@ npm run build
 
 Expected: Vitest 全部 PASS；`tsc -b && vite build` 退出 0。
 
-- [ ] **Task 12 Step 6: 验证 sdist/wheel 与桌面 staging**
+- [x] **Task 12 Step 6: 验证 sdist/wheel 与桌面 staging**
 
 Run:
 
@@ -925,7 +925,7 @@ test -f .desktop-build/agent/src/news/THIRD_PARTY_NOTICES.md
 
 Expected: sdist/wheel 与 `.desktop-build/agent` 都包含 notice；Tier 0 smoke PASS。若桌面 runtime 尚未组装，只记录该环境前置缺失，不伪造通过，并在 verify 阶段补做。
 
-- [ ] **Task 12 Step 7: 安全回归与全量适度测试**
+- [x] **Task 12 Step 7: 安全回归与全量适度测试**
 
 Run:
 
@@ -935,7 +935,7 @@ pytest --ignore=agent/tests/e2e_backtest --ignore=agent/tests/test_e2e_harness_v
 
 Expected: 全套非 live/e2e 测试 PASS；不得运行 broker-write 或 live trading 流程。
 
-- [ ] **Task 12 Step 8: 定向勾选非独立审查项并提交**
+- [x] **Task 12 Step 8: 定向勾选非独立审查项并提交**
 
 逐项核对 1.1-7.4 的命令证据后，把已验证项从 `- [ ]` 改为 `- [x]`；7.5 必须保持未勾选并交给 Task 13 的独立 reviewer/verifier。没有证据的项保持未勾选并继续修复，不能批量假定完成。
 
