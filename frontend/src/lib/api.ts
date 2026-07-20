@@ -184,7 +184,9 @@ function newsRecord(value: unknown, keys: readonly string[]): Record<string, unk
 }
 
 function newsString(value: unknown, minLength: number, maxLength: number): string {
-  if (typeof value !== "string" || value.length < minLength || value.length > maxLength) invalidNewsResponse();
+  if (typeof value !== "string") invalidNewsResponse();
+  const length = Array.from(value).length;
+  if (length < minLength || length > maxLength) invalidNewsResponse();
   return value;
 }
 
@@ -206,7 +208,18 @@ function newsArray(value: unknown, minLength: number, maxLength: number): unknow
 function newsUtcDate(value: unknown, nullable = false): string | null {
   if (nullable && value === null) return null;
   const date = newsString(value, 1, 64);
-  if (!/(?:Z|[+]00:00)$/.test(date) || Number.isNaN(Date.parse(date))) invalidNewsResponse();
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+]00:00)$/.exec(date);
+  if (!match) invalidNewsResponse();
+  const parsed = new Date(date);
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.getUTCFullYear() !== Number(match[1]) ||
+    parsed.getUTCMonth() + 1 !== Number(match[2]) ||
+    parsed.getUTCDate() !== Number(match[3]) ||
+    parsed.getUTCHours() !== Number(match[4]) ||
+    parsed.getUTCMinutes() !== Number(match[5]) ||
+    parsed.getUTCSeconds() !== Number(match[6])
+  ) invalidNewsResponse();
   return date;
 }
 
@@ -238,7 +251,8 @@ function newsPublicUrlComponent(value: string): void {
 function newsHttpUrl(value: unknown): string {
   const url = newsString(value, 1, 2048);
   try {
-    if (!/^https?:\/\/[^/?#]+/i.test(url)) invalidNewsResponse();
+    const rawAuthority = /^https?:\/\/([^/?#]+)/i.exec(url)?.[1];
+    if (!rawAuthority || rawAuthority.includes("@")) invalidNewsResponse();
     const parsed = new URL(url);
     if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname || parsed.username || parsed.password) {
       invalidNewsResponse();

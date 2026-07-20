@@ -62,7 +62,7 @@ function validNewsSnapshot() {
         },
       })),
     },
-    refresh: runningStatus,
+    refresh: { ...runningStatus },
     error: null,
   };
 }
@@ -220,6 +220,33 @@ describe("api request helper", () => {
   it("rejects article titles longer than the backend limit", async () => {
     const payload = validNewsSnapshot();
     payload.snapshot.tracks[0].items[0].title = "x".repeat(301);
+    const { parseNewsSnapshotResponse } = await loadApiModule();
+
+    expect(() => parseNewsSnapshotResponse(payload)).toThrow(expect.objectContaining({ name: "ApiError", status: 200 }));
+  });
+
+  it("rejects invalid UTC calendar dates", async () => {
+    const payload = validNewsSnapshot();
+    payload.snapshot.generated_at = "2026-02-30T10:00:00Z";
+    const { parseNewsSnapshotResponse } = await loadApiModule();
+
+    expect(() => parseNewsSnapshotResponse(payload)).toThrow(expect.objectContaining({ name: "ApiError", status: 200 }));
+  });
+
+  it("accepts article titles within the backend code-point limit", async () => {
+    const payload = validNewsSnapshot();
+    payload.snapshot.tracks[0].items[0].title = "😀".repeat(151);
+    const { parseNewsSnapshotResponse } = await loadApiModule();
+
+    expect(parseNewsSnapshotResponse(payload).snapshot?.tracks[0].items[0].title).toBe(payload.snapshot.tracks[0].items[0].title);
+  });
+
+  it.each([
+    "https://@example.com/article",
+    "https://:@example.com/article",
+  ])("rejects article URLs with empty userinfo: %s", async (url) => {
+    const payload = validNewsSnapshot();
+    payload.snapshot.tracks[0].items[0].url = url;
     const { parseNewsSnapshotResponse } = await loadApiModule();
 
     expect(() => parseNewsSnapshotResponse(payload)).toThrow(expect.objectContaining({ name: "ApiError", status: 200 }));

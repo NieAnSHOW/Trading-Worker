@@ -87,6 +87,18 @@ lacking a raw authority. A regression test first showed the frontend accepting
 that URL. The parser now requires a non-empty raw `http(s)://authority` before
 constructing `URL`, and the focused API suite passed with `14 passed`.
 
+## Unicode And Userinfo Follow-up
+
+A final independent review found that JavaScript's UTF-16 `string.length`
+would reject backend-valid non-BMP text, and that empty URL userinfo was not
+visible through the WHATWG URL properties. Regression tests first failed for a
+151-code-point emoji title and both `https://@example.com/...` and
+`https://:@example.com/...`. String bounds now use Unicode code-point counts,
+and raw authorities containing `@` are rejected before URL normalization. The
+same review also identified JavaScript's normalization of invalid calendar
+dates; strict UTC date parsing now rejects values such as February 30. The
+focused API suite passed with `18 passed`.
+
 ## Scope
 
 No page, router, layout navigation, global store, or polling hook was added;
