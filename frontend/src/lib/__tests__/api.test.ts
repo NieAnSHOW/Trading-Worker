@@ -115,6 +115,26 @@ describe("api request helper", () => {
     } satisfies Partial<ApiError>);
   });
 
+  it("wraps malformed JSON responses in ApiError", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response("{\"status\": true", {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+
+    const { api } = await loadApiModule();
+
+    await expect(api.getChannelStatus()).rejects.toMatchObject({
+      name: "ApiError",
+      status: 200,
+      message: "Invalid JSON response from /channels/status",
+    } satisfies Partial<ApiError>);
+  });
+
   it("starts news refresh through the authenticated json client", async () => {
     const fetchMock = mockFetchJson({
       task_id: "00000000-0000-4000-8000-000000000001",
@@ -171,6 +191,19 @@ describe("api request helper", () => {
   it("rejects article URLs outside HTTP(S)", async () => {
     const payload = validNewsSnapshot();
     payload.snapshot.tracks[0].items[0].url = "javascript:alert(1)";
+    const { parseNewsSnapshotResponse } = await loadApiModule();
+
+    expect(() => parseNewsSnapshotResponse(payload)).toThrow(expect.objectContaining({ name: "ApiError", status: 200 }));
+  });
+
+  it.each([
+    "https://example.com/article?access_token=secret-value",
+    "https://example.com/article#authorization=Bearer%20secret-value",
+    "https://example.com/article?continue=sk-secret-value",
+    "https://example.com/article?session=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature",
+  ])("rejects article URLs with credential material: %s", async (url) => {
+    const payload = validNewsSnapshot();
+    payload.snapshot.tracks[0].items[0].url = url;
     const { parseNewsSnapshotResponse } = await loadApiModule();
 
     expect(() => parseNewsSnapshotResponse(payload)).toThrow(expect.objectContaining({ name: "ApiError", status: 200 }));

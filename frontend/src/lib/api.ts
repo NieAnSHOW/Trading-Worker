@@ -58,13 +58,21 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     );
   }
 
-  return JSON.parse(text) as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new ApiError(`Invalid JSON response from ${path}`, res.status);
+  }
 }
 
 const NEWS_TRACK_IDS = ["ai", "semi", "robot", "auto", "energy", "bio", "space", "security", "tech", "consumer", "macro", "science"] as const;
 const NEWS_TRACK_STATES = ["fresh", "stale", "unavailable"] as const;
 const NEWS_REFRESH_PHASES = ["idle", "fetching", "normalizing", "enriching", "committing", "succeeded", "failed", "cancelled"] as const;
 const NEWS_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const NEWS_SENSITIVE_PARAMETER_NAMES = new Set([
+  "access_token", "api_key", "apikey", "authorization", "credential", "credentials", "key", "password", "secret", "sig", "signature", "token",
+]);
+const NEWS_SENSITIVE_URL_VALUE_PATTERN = /(?:\bbearer\s+\S+|\bsk-[a-z0-9_-]{4,}\b|\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b|\b(?:gh[pousr]_[a-z0-9]{20,}|github_pat_[a-z0-9_]{20,})\b|\bAKIA[0-9A-Z]{16}\b|\bxox[baprs]-[a-z0-9-]{10,}\b|\b(?=[A-Za-z0-9/+=]{40}\b)(?=[A-Za-z0-9/+=]{0,39}[A-Z])(?=[A-Za-z0-9/+=]{0,39}[a-z])(?=[A-Za-z0-9/+=]{0,39}\d)[A-Za-z0-9/+=]{40}\b|\bsecret_[a-z0-9_-]{16,}\b|\b(?:secret|private)[-_ ]?(?:token|key|value)\b)/i;
 const NEWS_PUBLIC_ERRORS: Record<string, string> = {
   ai_unavailable: "AI highlights are unavailable",
   cancelled: "news refresh was cancelled",
@@ -202,6 +210,31 @@ function newsUtcDate(value: unknown, nullable = false): string | null {
   return date;
 }
 
+function newsUrlComponent(value: string): string {
+  try {
+    return decodeURIComponent(value.replace(/\+/g, " "));
+  } catch {
+    invalidNewsResponse();
+  }
+}
+
+function newsSensitiveParameter(name: string): boolean {
+  const normalized = name.toLowerCase().replace(/[^a-z0-9]/g, "_").replace(/^_+|_+$/g, "");
+  return NEWS_SENSITIVE_PARAMETER_NAMES.has(normalized) || normalized.endsWith("_signature") ||
+    normalized.split("_").some((part) => ["authorization", "credential", "key", "password", "secret", "token"].includes(part));
+}
+
+function newsPublicUrlComponent(value: string): void {
+  for (const segment of newsUrlComponent(value).split(/[&;]/)) {
+    const separator = segment.indexOf("=");
+    const name = separator === -1 ? segment : segment.slice(0, separator);
+    const parameterValue = separator === -1 ? "" : segment.slice(separator + 1);
+    if ((name && newsSensitiveParameter(name)) || (separator !== -1 && NEWS_SENSITIVE_URL_VALUE_PATTERN.test(parameterValue))) {
+      invalidNewsResponse();
+    }
+  }
+}
+
 function newsHttpUrl(value: unknown): string {
   const url = newsString(value, 1, 2048);
   try {
@@ -209,6 +242,8 @@ function newsHttpUrl(value: unknown): string {
     if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname || parsed.username || parsed.password) {
       invalidNewsResponse();
     }
+    newsPublicUrlComponent(parsed.search.slice(1));
+    newsPublicUrlComponent(parsed.hash.slice(1));
   } catch {
     invalidNewsResponse();
   }

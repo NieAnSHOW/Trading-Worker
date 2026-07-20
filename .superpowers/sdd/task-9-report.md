@@ -66,6 +66,19 @@ with `Invalid news API response`, then the parser switched to the general
 hexadecimal UUID shape used by that model. The full focused GREEN command was
 rerun and passed with `16 passed`; the production build passed again.
 
+## Parser Security Follow-up
+
+Two frontend parser gaps identified during the second review round were
+covered with test-first regressions. A successful response declared as JSON
+but containing malformed JSON previously leaked `SyntaxError`; the RED run
+showed that failure, and `request()` now returns `ApiError("Invalid JSON
+response from <path>", 200)` instead. The news article URL parser also now
+matches the backend's public URL contract: it rejects credential parameter
+names in query strings and fragments, plus encoded Bearer, `sk-`, and JWT-like
+credential values. The URL regression tests first failed because all four
+URLs were accepted; after the parser change, `npx vitest run
+src/lib/__tests__/api.test.ts` passed with `13 passed`.
+
 ## Scope
 
 No page, router, layout navigation, global store, or polling hook was added;
