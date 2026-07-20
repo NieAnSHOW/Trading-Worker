@@ -45,6 +45,8 @@ _SENSITIVE_PARAMETER_NAMES = frozenset(
 )
 _PUBLIC_ERROR_MESSAGES = {
     "ai_unavailable": "AI highlights are unavailable",
+    "cancelled": "news refresh was cancelled",
+    "no_track_updated": "no news tracks were updated",
     "snapshot_corrupt": "news snapshot is corrupt",
     "snapshot_unavailable": "news snapshot is unavailable",
     "snapshot_write_failed": "news snapshot could not be saved",
@@ -240,7 +242,7 @@ class NewsSnapshot(_StrictModel):
 
 
 class RefreshStatus(_StrictModel):
-    state: Literal["idle", "fetching", "normalizing", "enriching", "committing", "succeeded", "failed"]
+    state: Literal["idle", "fetching", "normalizing", "enriching", "committing", "succeeded", "failed", "cancelled"]
     task_id: UUID | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None

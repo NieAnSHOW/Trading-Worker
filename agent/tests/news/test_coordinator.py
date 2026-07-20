@@ -260,7 +260,7 @@ def test_no_track_updated_fails_before_llm_or_storage() -> None:
         status = await coordinator.status()
         assert status.state == "failed"
         assert status.error is not None
-        assert status.error.code == "upstream_failed"
+        assert status.error.code == "no_track_updated"
         assert calls == {"llm": 0, "enricher": 0}
         assert store.writes == []
         await coordinator.close()
@@ -355,8 +355,42 @@ def test_close_cancels_refresh_closes_client_and_never_commits_partial_snapshot(
         assert client.closed is True
         assert store.writes == []
         status = await coordinator.status()
-        assert status.state == "failed"
+        assert status.state == "cancelled"
         assert status.completed_at == NOW
+        assert status.error is not None
+        assert status.error.code == "cancelled"
+
+    asyncio.run(run_case())
+
+
+def test_close_waits_for_committing_write_and_reports_its_success() -> None:
+    async def run_case() -> None:
+        previous = old_snapshot()
+        store = MemoryStore(snapshot=previous)
+        store.write_gate = threading.Event()
+
+        async def identity_enricher(
+            tracks: Sequence[TrackSnapshot], updated_track_ids: frozenset[str], llm_factory
+        ) -> tuple[TrackSnapshot, ...]:
+            return tuple(tracks)
+
+        coordinator, client, _ = make_coordinator(store=store, enricher=identity_enricher)
+        await coordinator.start()
+        await asyncio.to_thread(store.write_started.wait, 2)
+        assert (await coordinator.status()).state == "committing"
+
+        closing = asyncio.create_task(coordinator.close())
+        await asyncio.sleep(0.05)
+        assert not closing.done()
+
+        store.write_gate.set()
+        await closing
+
+        status = await coordinator.status()
+        assert status.state == "succeeded"
+        assert store.snapshot == store.writes[0]
+        assert store.snapshot != previous
+        assert client.closed is True
 
     asyncio.run(run_case())
 

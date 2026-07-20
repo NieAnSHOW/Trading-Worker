@@ -294,6 +294,23 @@ def test_public_error_requires_the_fixed_public_message_for_its_code() -> None:
         PublicError(code="upstream_failed", message="a generic but unapproved error")
 
 
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        ("no_track_updated", "no news tracks were updated"),
+        ("cancelled", "news refresh was cancelled"),
+    ],
+)
+def test_public_error_accepts_refresh_stable_codes(code: str, message: str) -> None:
+    assert PublicError(code=code, message=message).code == code
+
+
+def test_refresh_status_accepts_cancelled_terminal_state() -> None:
+    status = RefreshStatus(state="cancelled", started_at=NOW, completed_at=NOW)
+
+    assert status.state == "cancelled"
+
+
 @pytest.mark.parametrize("highlight", ["", "x" * 301])
 def test_track_ai_rejects_empty_or_oversized_highlights(highlight: str) -> None:
     with pytest.raises(ValidationError):

@@ -31,6 +31,8 @@ from .storage import AtomicSnapshotStore, SnapshotStorageError
 logger = logging.getLogger(__name__)
 
 _PUBLIC_ERROR_MESSAGES = {
+    "cancelled": "news refresh was cancelled",
+    "no_track_updated": "no news tracks were updated",
     "snapshot_corrupt": "news snapshot is corrupt",
     "snapshot_unavailable": "news snapshot is unavailable",
     "snapshot_write_failed": "news snapshot could not be saved",
@@ -172,8 +174,10 @@ class NewsRefreshCoordinator:
         """Cancel active work, await it, and release the lazily-created client."""
         async with self._lock:
             task = self._task
+            should_cancel = self._status.state != "committing"
         if task is not None and not task.done():
-            task.cancel()
+            if should_cancel:
+                task.cancel()
             try:
                 await task
             except asyncio.CancelledError:
@@ -206,7 +210,7 @@ class NewsRefreshCoordinator:
             assignments, assignment_failures = await self._normalize(fetch_results)
             built = await asyncio.to_thread(self._pipeline, self._catalog, assignments, previous, self._now())
             if not built.updated_track_ids:
-                await self._fail(task_id, "upstream_failed")
+                await self._fail(task_id, "no_track_updated")
                 return
 
             await self._replace_status(state="enriching", processed_tracks=len(CANONICAL_TRACK_IDS))
@@ -230,7 +234,7 @@ class NewsRefreshCoordinator:
                     update={"state": "succeeded", "completed_at": self._now(), "error": None}
                 )
         except asyncio.CancelledError:
-            await self._fail(task_id, "upstream_failed")
+            await self._cancel(task_id)
             raise
         except SnapshotStorageError as exc:
             await self._fail(task_id, exc.code)
@@ -346,6 +350,14 @@ class NewsRefreshCoordinator:
                 return
             self._status = self._status.model_copy(
                 update={"state": "failed", "completed_at": self._now(), "error": _public_error(code)}
+            )
+
+    async def _cancel(self, task_id: UUID) -> None:
+        async with self._lock:
+            if self._status.task_id != task_id:
+                return
+            self._status = self._status.model_copy(
+                update={"state": "cancelled", "completed_at": self._now(), "error": _public_error("cancelled")}
             )
 
 
