@@ -16,6 +16,17 @@ const requiredPaths = [
   "news.ai",
   "news.aiUnavailable",
   "news.error",
+  "news.refresh",
+  "news.trackList",
+  "news.selectTrack",
+  "news.refreshProgress",
+  "news.loading",
+  "news.emptySnapshot",
+  "news.noSummary",
+  "news.unknownTime",
+  "news.viewOriginal",
+  "news.articleList",
+  "news.emptyTrack",
   ...trackIds.map((trackId) => `news.tracks.${trackId}`),
 ];
 

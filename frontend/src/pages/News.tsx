@@ -1,4 +1,5 @@
 import { AlertCircle, ExternalLink, RefreshCw } from "lucide-react";
+import type { KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { useNews } from "@/hooks/useNews";
 import type { NewsArticle, NewsPublicError, NewsTrackId } from "@/lib/api";
@@ -48,6 +49,7 @@ function publicErrorMessage(error: NewsPublicError | null | undefined): string |
 }
 
 function ArticleRow({ article }: { article: NewsArticle }) {
+  const { t, i18n } = useTranslation();
   const url = safeArticleUrl(article.url);
   const title = article.title_zh || article.title;
 
@@ -62,7 +64,7 @@ function ArticleRow({ article }: { article: NewsArticle }) {
             {title}
           </h3>
           <p className="mt-1.5 break-words text-sm leading-6 text-muted-foreground">
-            {article.summary ?? "暂无摘要"}
+            {article.summary ?? t("news.noSummary")}
           </p>
         </div>
         {url && (
@@ -72,7 +74,7 @@ function ArticleRow({ article }: { article: NewsArticle }) {
             rel="noopener noreferrer"
             className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
           >
-            查看原文
+            {t("news.viewOriginal")}
             <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
           </a>
         )}
@@ -81,10 +83,10 @@ function ArticleRow({ article }: { article: NewsArticle }) {
         <span>{article.source.name}</span>
         {article.published_at ? (
           <time dateTime={article.published_at}>
-            {new Date(article.published_at).toLocaleString()}
+            {new Date(article.published_at).toLocaleString(i18n.resolvedLanguage)}
           </time>
         ) : (
-          <span>时间未知</span>
+          <span>{t("news.unknownTime")}</span>
         )}
       </div>
     </article>
@@ -92,7 +94,7 @@ function ArticleRow({ article }: { article: NewsArticle }) {
 }
 
 export function News() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const {
     snapshot,
     stale,
@@ -113,7 +115,32 @@ export function News() {
   const statusError = publicErrorMessage(refreshStatus?.error);
   const envelopeError = publicErrorMessage(snapshotError);
   const visibleError = requestError ?? statusError ?? envelopeError;
-  const refreshLabel = "刷新全部资讯";
+  const refreshLabel = t("news.refresh");
+  const activeTrackId = selectedTrackId ?? TRACK_IDS[0];
+
+  const handleTrackKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    trackId: NewsTrackId,
+  ) => {
+    const currentIndex = TRACK_IDS.indexOf(trackId);
+    let nextIndex: number | null = null;
+
+    if (event.key === "ArrowRight") {
+      nextIndex = (currentIndex + 1) % TRACK_IDS.length;
+    } else if (event.key === "ArrowLeft") {
+      nextIndex = (currentIndex - 1 + TRACK_IDS.length) % TRACK_IDS.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = TRACK_IDS.length - 1;
+    }
+
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const nextTrackId = TRACK_IDS[nextIndex];
+    selectTrack(nextTrackId);
+    document.getElementById(`news-tab-${nextTrackId}`)?.focus();
+  };
 
   return (
     <div
@@ -130,7 +157,7 @@ export function News() {
               dateTime={snapshot.generated_at}
               className="mt-1 block text-xs text-muted-foreground"
             >
-              {new Date(snapshot.generated_at).toLocaleString()}
+              {new Date(snapshot.generated_at).toLocaleString(i18n.resolvedLanguage)}
             </time>
           )}
         </div>
@@ -152,20 +179,24 @@ export function News() {
       <div data-testid="news-desktop-tracks" className="hidden border-b border-border md:block">
         <div
           role="tablist"
-          aria-label="资讯赛道"
+          aria-label={t("news.trackList")}
           className="h-11 overflow-x-auto overscroll-x-contain"
         >
           <div className="flex h-full min-w-max items-center gap-1">
             {TRACK_IDS.map((trackId) => (
               <button
                 key={trackId}
+                id={`news-tab-${trackId}`}
                 type="button"
                 role="tab"
-                aria-selected={selectedTrackId === trackId}
+                aria-selected={activeTrackId === trackId}
+                aria-controls={`news-panel-${trackId}`}
+                tabIndex={activeTrackId === trackId ? 0 : -1}
                 onClick={() => selectTrack(trackId)}
+                onKeyDown={(event) => handleTrackKeyDown(event, trackId)}
                 className={cn(
                   "h-8 shrink-0 rounded-md px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
-                  selectedTrackId === trackId
+                  activeTrackId === trackId
                     ? "bg-primary/10 font-medium text-primary"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground",
                 )}
@@ -179,11 +210,11 @@ export function News() {
 
       <div data-testid="news-mobile-tracks" className="border-b border-border py-3 md:hidden">
         <label htmlFor="news-track-select" className="sr-only">
-          选择资讯赛道
+          {t("news.selectTrack")}
         </label>
         <select
           id="news-track-select"
-          aria-label="选择资讯赛道"
+          aria-label={t("news.selectTrack")}
           value={selectedTrackId ?? ""}
           onChange={(event) => selectTrack(event.target.value as NewsTrackId)}
           className="h-10 w-full min-w-0 rounded-md border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
@@ -201,8 +232,12 @@ export function News() {
           role="status"
           className="border-b border-border py-3 text-sm text-muted-foreground"
         >
-          正在刷新：{refreshStatus.processed_endpoints} / {refreshStatus.total_endpoints} 个来源，
-          {refreshStatus.processed_tracks} / {refreshStatus.total_tracks} 个赛道
+          {t("news.refreshProgress", {
+            processedEndpoints: refreshStatus.processed_endpoints,
+            totalEndpoints: refreshStatus.total_endpoints,
+            processedTracks: refreshStatus.processed_tracks,
+            totalTracks: refreshStatus.total_tracks,
+          })}
         </div>
       )}
 
@@ -219,80 +254,96 @@ export function News() {
         </div>
       )}
 
-      {isLoading && !snapshot ? (
-        <div className="flex flex-1 items-center justify-center py-16 text-sm text-muted-foreground">
-          正在加载资讯…
-        </div>
-      ) : !snapshot ? (
-        <div className="flex flex-1 items-center justify-center py-16 text-sm text-muted-foreground">
-          暂无资讯快照
-        </div>
-      ) : selectedTrack ? (
-        <div className="min-w-0 py-5">
-          <div className="flex flex-wrap items-center gap-2">
-            {selectedTrack.state === "unavailable" ? (
-              <span className="text-sm font-medium text-muted-foreground">
-                {t("news.unavailable")}
-              </span>
-            ) : stale || selectedTrack.stale ? (
-              <span className="text-sm font-medium text-amber-600 dark:text-amber-400">
-                {t("news.stale")}
-              </span>
-            ) : (
-              <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
-                {t("news.fresh")}
-              </span>
-            )}
-            {selectedTrack.partial && (
-              <span className="text-sm text-amber-600 dark:text-amber-400">
-                {t("news.partial")}
-              </span>
-            )}
+      {TRACK_IDS.filter((trackId) => trackId !== activeTrackId).map((trackId) => (
+        <div
+          key={trackId}
+          id={`news-panel-${trackId}`}
+          role="tabpanel"
+          aria-labelledby={`news-tab-${trackId}`}
+          hidden
+        />
+      ))}
+      <div
+        id={`news-panel-${activeTrackId}`}
+        role="tabpanel"
+        aria-labelledby={`news-tab-${activeTrackId}`}
+        className="flex min-w-0 flex-1 flex-col"
+      >
+        {isLoading && !snapshot ? (
+          <div className="flex flex-1 items-center justify-center py-16 text-sm text-muted-foreground">
+            {t("news.loading")}
           </div>
+        ) : !snapshot ? (
+          <div className="flex flex-1 items-center justify-center py-16 text-sm text-muted-foreground">
+            {t("news.emptySnapshot")}
+          </div>
+        ) : selectedTrack ? (
+          <div className="min-w-0 py-5">
+            <div className="flex flex-wrap items-center gap-2">
+              {selectedTrack.state === "unavailable" ? (
+                <span className="text-sm font-medium text-muted-foreground">
+                  {t("news.unavailable")}
+                </span>
+              ) : stale || selectedTrack.stale ? (
+                <span className="text-sm font-medium text-amber-600 dark:text-amber-400">
+                  {t("news.stale")}
+                </span>
+              ) : (
+                <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
+                  {t("news.fresh")}
+                </span>
+              )}
+              {selectedTrack.partial && (
+                <span className="text-sm text-amber-600 dark:text-amber-400">
+                  {t("news.partial")}
+                </span>
+              )}
+            </div>
 
-          <section
-            aria-labelledby="news-ai-heading"
-            className="mt-5 border-y border-border bg-muted/30 px-4 py-4 sm:px-5"
-          >
-            <h2 id="news-ai-heading" className="text-sm font-semibold">
-              {t("news.ai")}
-            </h2>
-            {selectedTrack.ai.available && selectedTrack.ai.highlights.length > 0 ? (
-              <ul
-                aria-label={t("news.ai")}
-                className="mt-3 grid min-w-0 gap-2 text-sm leading-6 lg:grid-cols-2"
-              >
-                {selectedTrack.ai.highlights.slice(0, 5).map((highlight, index) => (
-                  <li key={`${index}-${highlight}`} className="flex min-w-0 items-start gap-2">
-                    <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" aria-hidden="true" />
-                    <span className="min-w-0 break-words [overflow-wrap:anywhere]">{highlight}</span>
-                  </li>
+            <section
+              aria-labelledby="news-ai-heading"
+              className="mt-5 border-y border-border bg-muted/30 px-4 py-4 sm:px-5"
+            >
+              <h2 id="news-ai-heading" className="text-sm font-semibold">
+                {t("news.ai")}
+              </h2>
+              {selectedTrack.ai.available && selectedTrack.ai.highlights.length > 0 ? (
+                <ul
+                  aria-label={t("news.ai")}
+                  className="mt-3 grid min-w-0 gap-2 text-sm leading-6 lg:grid-cols-2"
+                >
+                  {selectedTrack.ai.highlights.slice(0, 5).map((highlight, index) => (
+                    <li key={`${index}-${highlight}`} className="flex min-w-0 items-start gap-2">
+                      <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" aria-hidden="true" />
+                      <span className="min-w-0 break-words [overflow-wrap:anywhere]">{highlight}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-2 text-sm text-muted-foreground">
+                  {t("news.aiUnavailable")}
+                </p>
+              )}
+            </section>
+
+            {selectedTrack.items.length > 0 ? (
+              <section aria-label={t("news.articleList")} className="min-w-0 pt-5">
+                {selectedTrack.items.map((item) => (
+                  <ArticleRow key={item.id} article={item} />
                 ))}
-              </ul>
+              </section>
             ) : (
-              <p className="mt-2 text-sm text-muted-foreground">
-                {t("news.aiUnavailable")}
+              <p className="py-12 text-center text-sm text-muted-foreground">
+                {t("news.emptyTrack")}
               </p>
             )}
-          </section>
-
-          {selectedTrack.items.length > 0 ? (
-            <section aria-label="资讯列表" className="min-w-0 pt-5">
-              {selectedTrack.items.map((item) => (
-                <ArticleRow key={item.id} article={item} />
-              ))}
-            </section>
-          ) : (
-            <p className="py-12 text-center text-sm text-muted-foreground">
-              当前赛道暂无资讯
-            </p>
-          )}
-        </div>
-      ) : (
-        <div className="flex flex-1 items-center justify-center py-16 text-sm text-muted-foreground">
-          暂无资讯快照
-        </div>
-      )}
+          </div>
+        ) : (
+          <div className="flex flex-1 items-center justify-center py-16 text-sm text-muted-foreground">
+            {t("news.emptySnapshot")}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

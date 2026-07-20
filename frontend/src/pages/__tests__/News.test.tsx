@@ -173,6 +173,66 @@ describe("News workspace", () => {
     expect(within(selector).getAllByRole("option")).toHaveLength(12);
   });
 
+  it("exposes a roving tab set linked to the selected track panel", async () => {
+    const user = userEvent.setup();
+    render(<News />);
+
+    const aiTab = screen.getByRole("tab", { name: "人工智能" });
+    const semiTab = screen.getByRole("tab", { name: "半导体" });
+    expect(aiTab).toHaveAttribute("tabindex", "0");
+    expect(semiTab).toHaveAttribute("tabindex", "-1");
+    expect(aiTab).toHaveAttribute("aria-controls", "news-panel-ai");
+    for (const tab of screen.getAllByRole("tab")) {
+      const panelId = tab.getAttribute("aria-controls");
+      expect(panelId).toBeTruthy();
+      expect(document.getElementById(panelId!)).toHaveAttribute(
+        "aria-labelledby",
+        tab.id,
+      );
+    }
+    expect(screen.getByRole("tabpanel")).toHaveAttribute(
+      "aria-labelledby",
+      "news-tab-ai",
+    );
+
+    aiTab.focus();
+    await user.keyboard("{ArrowRight}");
+
+    expect(semiTab).toHaveFocus();
+    expect(semiTab).toHaveAttribute("tabindex", "0");
+    expect(aiTab).toHaveAttribute("tabindex", "-1");
+    expect(screen.getByRole("tabpanel")).toHaveAttribute(
+      "aria-labelledby",
+      "news-tab-semi",
+    );
+    expect(screen.getByRole("heading", { name: "芯片新闻" })).toBeInTheDocument();
+  });
+
+  it("supports Home and End keyboard navigation across desktop tracks", async () => {
+    const user = userEvent.setup();
+    render(<News />);
+
+    const firstTab = screen.getByRole("tab", { name: "人工智能" });
+    const lastTab = screen.getByRole("tab", { name: "科学" });
+    firstTab.focus();
+
+    await user.keyboard("{ArrowLeft}");
+    expect(lastTab).toHaveFocus();
+    expect(lastTab).toHaveAttribute("aria-selected", "true");
+
+    await user.keyboard("{ArrowRight}");
+    expect(firstTab).toHaveFocus();
+    expect(firstTab).toHaveAttribute("aria-selected", "true");
+
+    await user.keyboard("{End}");
+    expect(lastTab).toHaveFocus();
+    expect(lastTab).toHaveAttribute("aria-selected", "true");
+
+    await user.keyboard("{Home}");
+    expect(firstTab).toHaveFocus();
+    expect(firstTab).toHaveAttribute("aria-selected", "true");
+  });
+
   it("switches tracks without changing refresh scope", async () => {
     const user = userEvent.setup();
     render(<News />);
@@ -370,5 +430,76 @@ describe("News workspace", () => {
     expect(safe).toHaveAttribute("rel", "noopener noreferrer");
     expect(within(screen.getByTestId("unsafe")).queryByRole("link")).not.toBeInTheDocument();
     expect(within(screen.getByTestId("malformed")).queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("localizes the complete workspace and formats dates with the resolved language", async () => {
+    const dateSpy = vi
+      .spyOn(Date.prototype, "toLocaleString")
+      .mockImplementation(function formatDate(locales) {
+        return `formatted:${String(locales)}`;
+      });
+    await i18n.changeLanguage("en");
+    const current = track("ai", {
+      items: [
+        article({
+          id: "missing-fields",
+          title_zh: null,
+          summary: null,
+          published_at: null,
+        }),
+        article({
+          id: "dated-article",
+          title_zh: null,
+          published_at: "2026-07-20T08:00:00Z",
+        }),
+      ],
+    });
+    mocks.state = pageState({
+      isRefreshing: true,
+      refreshStatus: {
+        ...idleRefresh,
+        state: "fetching",
+        processed_endpoints: 26,
+        processed_tracks: 3,
+      },
+      snapshot: snapshot({
+        tracks: TRACK_IDS.map((id) => (id === "ai" ? current : track(id))),
+      }),
+    });
+
+    const { rerender } = render(<News />);
+
+    expect(screen.getByRole("heading", { name: "Investment News" })).toBeInTheDocument();
+    expect(screen.getByRole("tablist", { name: "News tracks" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Select news track" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh all news" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Refreshing: 26 / 106 sources, 3 / 12 tracks",
+    );
+    expect(screen.getByTestId("missing-fields")).toHaveTextContent("No summary available");
+    expect(screen.getByTestId("missing-fields")).toHaveTextContent("Time unavailable");
+    expect(screen.getAllByRole("link", { name: "View original" })).toHaveLength(2);
+    expect(screen.getByRole("region", { name: "News articles" })).toBeInTheDocument();
+    expect(screen.getAllByText("formatted:en")).toHaveLength(2);
+    expect(dateSpy).toHaveBeenCalledTimes(2);
+    expect(dateSpy).toHaveBeenNthCalledWith(1, "en");
+    expect(dateSpy).toHaveBeenNthCalledWith(2, "en");
+
+    mocks.state = pageState({
+      snapshot: null,
+      available: false,
+      selectedTrackId: null,
+      isLoading: true,
+    });
+    rerender(<News />);
+    expect(screen.getByText("Loading news…")).toBeInTheDocument();
+
+    mocks.state = pageState({
+      snapshot: null,
+      available: false,
+      selectedTrackId: null,
+    });
+    rerender(<News />);
+    expect(screen.getByText("No news snapshot is available")).toBeInTheDocument();
   });
 });
