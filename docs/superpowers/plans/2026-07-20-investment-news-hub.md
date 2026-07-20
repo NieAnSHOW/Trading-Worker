@@ -451,7 +451,7 @@ git commit -s -m "feat(news): add deterministic track merge pipeline"
 - Consumes: Task 5 的更新赛道和 `build_llm` factory。
 - Produces: `enrich_tracks(tracks: Sequence[TrackSnapshot], updated_track_ids: frozenset[str], llm_factory: Callable[[], Any]) -> tuple[TrackSnapshot, ...]`；只修改更新赛道的 `title_zh` 与 `ai`。
 
-- [ ] **Task 6 Step 1: 写调用次数、输入上限和降级失败测试**
+- [x] **Task 6 Step 1: 写调用次数、输入上限和降级失败测试**
 
 ```python
 def test_one_llm_instance_and_one_call_per_updated_track() -> None:
@@ -469,13 +469,13 @@ def test_one_llm_instance_and_one_call_per_updated_track() -> None:
 
 再用 barrier fake 断言并发峰值不超过 3，并覆盖原中文标题、未知 ID、重复 ID、畸形 JSON、少于 3/多于 5 要点、超长标题、提示注入和单赛道异常。
 
-- [ ] **Task 6 Step 2: 运行 RED**
+- [x] **Task 6 Step 2: 运行 RED**
 
 Run: `pytest agent/tests/news/test_llm_enrichment.py -q`
 
 Expected: FAIL，因为 enrich 管线尚不存在。
 
-- [ ] **Task 6 Step 3: 实现严格输出模型和提示词边界**
+- [x] **Task 6 Step 3: 实现严格输出模型和提示词边界**
 
 ```python
 class TrackLLMOutput(BaseModel):
@@ -491,17 +491,17 @@ async def invoke_model(llm: Any, messages: list[dict[str, Any]]) -> Any:
 
 feed 文本放入明确 data 区并声明其指令不可信；消息统一使用包含 `role` 与 `content` 的 dict，兼容 ChatOpenAI 与现有 `OpenAICodexLLM` 的 `.get()` 读取方式。响应只从 message content 提取 JSON，再用 Pydantic 校验；增加直接传入 Codex-compatible fake 的回归测试。每条 highlight 上限固定为 300 字符，并覆盖刚好 300 与 301 字符拒绝。
 
-- [ ] **Task 6 Step 4: 实现一次 build 与并发 3**
+- [x] **Task 6 Step 4: 实现一次 build 与并发 3**
 
 确认至少一个更新赛道后调用一次 `llm_factory()`；每个更新赛道截取最多 16 条，使用一个 `asyncio.Semaphore(3)`。`build_llm()` 或任一赛道失败时只写固定 AI error code，原始资讯仍可提交。
 
-- [ ] **Task 6 Step 5: 运行 GREEN**
+- [x] **Task 6 Step 5: 运行 GREEN**
 
 Run: `pytest agent/tests/news/test_llm_enrichment.py -q`
 
 Expected: PASS，断言 build count 1、调用数等于更新赛道数、并发峰值 3。
 
-- [ ] **Task 6 Step 6: 提交**
+- [x] **Task 6 Step 6: 提交**
 
 ```bash
 git add agent/src/news/llm.py agent/tests/news/test_llm_enrichment.py openspec/changes/investment-news-hub/tasks.md
