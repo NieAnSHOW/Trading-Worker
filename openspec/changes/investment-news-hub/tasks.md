@@ -27,9 +27,9 @@
 
 - [x] 5.1 先编写刷新协调器测试，覆盖一次任务刷新全部 12 个赛道、快速启动、阶段进度、单进程单任务、并发请求复用、赛道级 stale 回退、首次 unavailable、12 赛道均无更新时不写盘、取消、重启后 idle 和失败时保留旧快照
 - [x] 5.2 实现进程内 `NewsRefreshCoordinator`，以仅驻内存的异步任务编排全部 12 个赛道的采集、标准化、本地化、摘要、赛道级新旧合并和原子提交，并将阻塞工作移出事件循环
-- [ ] 5.3 先编写 `/news-api/snapshot`、`/news-api/refresh` 和 `/news-api/refresh/status` 的响应、`202`、陈旧回退、空状态及 SPA 路由隔离测试
-- [ ] 5.4 在现有 FastAPI sidecar 注册 `/news-api/...` 路由，复用 `require_auth` 的本地回环与远程 `API_AUTH_KEY` 策略，不启动第二服务
-- [ ] 5.5 添加安全测试，确认未授权远程请求被拒绝，且 API 响应、快照、任务状态与日志不包含 LLM/API 凭据或原始 Provider 异常内容
+- [x] 5.3 先编写 `/news-api/snapshot`、`/news-api/refresh` 和 `/news-api/refresh/status` 的响应、`202`、陈旧回退、空状态及 SPA 路由隔离测试
+- [x] 5.4 在现有 FastAPI sidecar 注册 `/news-api/...` 路由，复用 `require_auth` 的本地回环与远程 `API_AUTH_KEY` 策略，不启动第二服务
+- [x] 5.5 添加安全测试，确认未授权远程请求被拒绝，且 API 响应、快照、任务状态与日志不包含 LLM/API 凭据或原始 Provider 异常内容
 
 ## 6. React 投资资讯页面
 

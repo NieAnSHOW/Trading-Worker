@@ -585,7 +585,7 @@ git commit -s -m "feat(news): coordinate single background refresh"
 - Consumes: Task 7 进程级 coordinator 与 Task 2 API 模型。
 - Produces: `create_news_router(coordinator: NewsRefreshCoordinator) -> APIRouter` 与 `register_news_routes(app, require_auth, coordinator)`，暴露 `GET /news-api/snapshot`、`POST /news-api/refresh`、`GET /news-api/refresh/status`。
 
-- [ ] **Task 8 Step 1: 写 API 契约失败测试**
+- [x] **Task 8 Step 1: 写 API 契约失败测试**
 
 ```python
 def test_refresh_returns_202_and_reuses_task(client: TestClient) -> None:
@@ -599,13 +599,13 @@ def test_refresh_returns_202_and_reuses_task(client: TestClient) -> None:
 
 fixture 使用带 `asyncio.Event` gate 的 `FakeNewsCoordinator`，确保第二次 POST 发生时第一任务仍为 running，且绝不构造真实 collector。覆盖无快照 200 包络、损坏快照、远程未授权 401/403、跨站 POST、防止 `/news-api` HTML fallback、响应/日志 canary 脱敏和 shutdown close。
 
-- [ ] **Task 8 Step 2: 运行 RED**
+- [x] **Task 8 Step 2: 运行 RED**
 
 Run: `pytest agent/tests/test_news_routes.py agent/tests/test_security_auth_api.py agent/tests/test_spa_fallback.py -q`
 
 Expected: FAIL，三个路由尚未注册。
 
-- [ ] **Task 8 Step 3: 实现薄路由与依赖注入**
+- [x] **Task 8 Step 3: 实现薄路由与依赖注入**
 
 ```python
 def create_news_router(coordinator: NewsRefreshCoordinator) -> APIRouter:
@@ -622,13 +622,13 @@ def register_news_routes(
 
 handler 仅调用 coordinator，不接受 refresh body、track ID、feed URL 或 LLM 参数；POST 设置 `status_code=202`。
 
-- [ ] **Task 8 Step 4: 注册路由与 shutdown**
+- [x] **Task 8 Step 4: 注册路由与 shutdown**
 
 在 `agent/api_server.py` 的领域路由装配区、根静态 mount 前执行 `news_coordinator = get_news_coordinator()`，再调用 `register_news_routes(app, require_auth=require_auth, coordinator=news_coordinator)`；新增 shutdown hook 调用 `await news_coordinator.close()`。注册和 shutdown 必须使用同一实例，路由模块不得反向导入 `api_server`。
 
 对于所有不安全请求，现有 CSRF 检查只接受同源或精确属于 `CORS_ORIGINS` 的带 `Origin` 调用；默认集合补充 `http://localhost:5899` 与 `http://127.0.0.1:5899`。该检查必须以应用级 middleware 在路由执行前运行，不能只依赖 `require_auth`，从而覆盖 `/watchlist/stocks` 等未挂鉴权依赖的写路由。其他 loopback Origin 必须在协调器开始前被拒绝；无 `Origin` 的非浏览器客户端保持既有鉴权语义。
 
-- [ ] **Task 8 Step 5: 运行 GREEN 与语法检查**
+- [x] **Task 8 Step 5: 运行 GREEN 与语法检查**
 
 Run:
 
@@ -639,7 +639,7 @@ python -m py_compile agent/api_server.py agent/src/api/news_routes.py
 
 Expected: 全部 PASS；API 错误保持 JSON，`/news` 仍由普通 SPA catch-all 处理。
 
-- [ ] **Task 8 Step 6: 提交**
+- [x] **Task 8 Step 6: 提交**
 
 ```bash
 git add agent/src/api/news_routes.py agent/api_server.py agent/tests/test_news_routes.py agent/tests/test_security_auth_api.py agent/tests/test_spa_fallback.py openspec/changes/investment-news-hub/tasks.md
