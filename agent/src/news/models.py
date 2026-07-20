@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import re
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import unquote_plus, urlsplit
 from uuid import UUID
 
@@ -28,15 +28,38 @@ CANONICAL_TRACK_IDS = (
 MAX_ENDPOINTS = 106
 MAX_ASSIGNMENTS = 108
 _SENSITIVE_PARAMETER_NAMES = frozenset(
-    {"access_token", "api_key", "apikey", "authorization", "credential", "credentials", "key", "password", "secret", "token"}
+    {
+        "access_token",
+        "api_key",
+        "apikey",
+        "authorization",
+        "credential",
+        "credentials",
+        "key",
+        "password",
+        "secret",
+        "sig",
+        "signature",
+        "token",
+    }
 )
-_SENSITIVE_ERROR_PATTERN = re.compile(
-    r"(?:\b(?:api[ _-]?key|access[ _-]?token|authorization|credential|password|secret|token)\b\s*[:=]"
-    r"|\bbearer\s+\S+|\bsk-[a-z0-9_-]{4,}\b|\bprovider\s*[:=]|https?://"
-    r"|\b(?:openai|anthropic|deepseek|gemini|groq|dashscope|zhipu|moonshot|minimax|ollama)\b)",
+_PUBLIC_ERROR_MESSAGES = {
+    "ai_unavailable": "AI highlights are unavailable",
+    "snapshot_corrupt": "news snapshot is corrupt",
+    "snapshot_unavailable": "news snapshot is unavailable",
+    "snapshot_write_failed": "news snapshot could not be saved",
+    "upstream_failed": "news refresh failed",
+}
+_SENSITIVE_URL_VALUE_PATTERN = re.compile(
+    r"(?:\bbearer\s+\S+|\bsk-[a-z0-9_-]{4,}\b"
+    r"|\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b"
+    r"|\b(?:gh[pousr]_[a-z0-9]{20,}|github_pat_[a-z0-9_]{20,})\b"
+    r"|\bAKIA[0-9A-Z]{16}\b|\bxox[baprs]-[a-z0-9-]{10,}\b"
+    r"|\b(?=[A-Za-z0-9/+=]{40}\b)(?=[A-Za-z0-9/+=]{0,39}[A-Z])(?=[A-Za-z0-9/+=]{0,39}[a-z])"
+    r"(?=[A-Za-z0-9/+=]{0,39}\d)[A-Za-z0-9/+=]{40}\b"
+    r"|\bsecret_[a-z0-9_-]{16,}\b|\b(?:secret|private)[-_ ]?(?:token|key|value)\b)",
     re.IGNORECASE,
 )
-_SENSITIVE_URL_VALUE_PATTERN = re.compile(r"(?:\bbearer\s+\S+|\bsk-[a-z0-9_-]{4,}\b)", re.IGNORECASE)
 
 
 class _StrictModel(BaseModel):
@@ -51,7 +74,7 @@ def _validate_utc(value: datetime) -> datetime:
 
 def _is_sensitive_parameter(name: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]", "_", name.lower()).strip("_")
-    return normalized in _SENSITIVE_PARAMETER_NAMES or bool(
+    return normalized in _SENSITIVE_PARAMETER_NAMES or normalized.endswith("_signature") or bool(
         {"authorization", "credential", "key", "password", "secret", "token"}.intersection(normalized.split("_"))
     )
 
@@ -64,12 +87,11 @@ def _validate_public_http_url(value: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username is not None or parsed.password is not None:
         raise ValueError("URL must be a public HTTP(S) URL")
     for component in (parsed.query, parsed.fragment):
-        for segment in component.split("&"):
+        for segment in re.split(r"[&;]", unquote_plus(component)):
             name, separator, parameter_value = segment.partition("=")
-            name = unquote_plus(name)
             if name and _is_sensitive_parameter(name):
                 raise ValueError("URL must not contain credential parameters")
-            if separator and _SENSITIVE_URL_VALUE_PATTERN.search(unquote_plus(parameter_value)):
+            if separator and _SENSITIVE_URL_VALUE_PATTERN.search(parameter_value):
                 raise ValueError("URL must not contain credential values")
     return value
 
@@ -112,18 +134,17 @@ class PublicError(_StrictModel):
     code: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
     message: str = Field(min_length=1, max_length=200)
 
-    @field_validator("message")
-    @classmethod
-    def message_is_safe(cls, value: str) -> str:
-        if _SENSITIVE_ERROR_PATTERN.search(value):
-            raise ValueError("public error message must not contain provider or credential details")
-        return value
+    @model_validator(mode="after")
+    def message_is_canonical(self) -> "PublicError":
+        if _PUBLIC_ERROR_MESSAGES.get(self.code) != self.message:
+            raise ValueError("public error message must match its stable public code")
+        return self
 
 
 class TrackAi(_StrictModel):
     available: bool = False
     generated_at: datetime | None = None
-    highlights: list[str] = Field(default_factory=list, max_length=5)
+    highlights: list[Annotated[str, Field(min_length=1, max_length=300)]] = Field(default_factory=list, max_length=5)
     error: PublicError | None = None
 
     @field_validator("generated_at")

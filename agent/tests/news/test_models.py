@@ -226,9 +226,37 @@ def test_feed_urls_reject_embedded_credentials_and_secret_parameters(url: str) -
 
 def test_feed_urls_allow_public_http_urls() -> None:
     assert FeedSource(id="source-1", name="Source", url="https://example.com/feed?topic=markets").url.startswith("https://")
+    assert FeedSource(
+        id="source-1", name="Source", url="https://example.com/feed?id=550e8400-e29b-41d4-a716-446655440000"
+    ).url.startswith("https://")
+    assert FeedSource(
+        id="source-1", name="Source", url="https://example.com/feed?post_id=article-20260720-12345678901234567890"
+    ).url.startswith("https://")
     data = item().model_dump()
     data["url"] = "http://example.com/article#section-2"
     assert FeedItem.model_validate(data).url.startswith("http://")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/feed?X-Amz-Signature=aws-signature",
+        "https://example.com/feed?sig=opaque-signature",
+        "https://example.com/feed?session=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature",
+        "https://example.com/feed?session=ghp_abcdefghijklmnopqrstuvwxyz1234567890",
+        "https://example.com/feed?session=github_pat_abcdefghijklmnopqrstuvwxyz1234567890",
+        "https://example.com/feed?next=secret-token-value",
+        "https://example.com/feed?next=secret_abcdefghijklmnop",
+        "https://example.com/feed?next=AKIAIOSFODNN7EXAMPLE",
+        "https://example.com/feed?next=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "https://example.com/feed?next=xoxb-123456789012-abcdefghijklmnopqrstuvwxyz",
+        "https://example.com/feed?topic=markets;api_key=secret-value",
+        "https://example.com/feed#section=latest;sig=opaque-signature",
+    ],
+)
+def test_feed_urls_reject_signature_and_opaque_credential_values(url: str) -> None:
+    with pytest.raises(ValidationError):
+        FeedSource(id="source-1", name="Source", url=url)
 
 
 @pytest.mark.parametrize(
@@ -238,11 +266,38 @@ def test_feed_urls_allow_public_http_urls() -> None:
         "request failed for https://api.openai.com/v1/chat/completions",
         "provider=anthropic rejected credential",
         "upstream returned sk-secret-value",
+        "Provider failed to respond",
+        "API key was rejected",
+        "OpenAIError: upstream failure",
+        "OpenRouter authentication failure",
+        "Xiaomi MIMO authentication failure",
+        "Z.ai upstream error",
+        "LiteLLM.AuthenticationError: failed",
+        "AWS Bedrock error",
+        "authentication failure",
+        "upstream error",
+        "X-Amz-Signature=aws-signature",
+        "sig=opaque-signature",
     ],
 )
 def test_public_error_rejects_provider_and_credential_like_messages(message: str) -> None:
     with pytest.raises(ValidationError):
         PublicError(code="upstream_failed", message=message)
+
+
+def test_public_error_requires_the_fixed_public_message_for_its_code() -> None:
+    error = PublicError(code="upstream_failed", message="news refresh failed")
+
+    assert error.message == "news refresh failed"
+
+    with pytest.raises(ValidationError):
+        PublicError(code="upstream_failed", message="a generic but unapproved error")
+
+
+@pytest.mark.parametrize("highlight", ["", "x" * 301])
+def test_track_ai_rejects_empty_or_oversized_highlights(highlight: str) -> None:
+    with pytest.raises(ValidationError):
+        TrackAi(available=True, generated_at=NOW, highlights=[highlight, "Second point", "Third point"])
 
 
 def test_snapshot_response_and_refresh_acceptance_expose_only_public_state() -> None:
