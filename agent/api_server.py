@@ -15,8 +15,9 @@ from typing import Any, Dict
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status  # noqa: F401
-from fastapi.responses import FileResponse  # noqa: F401
+from fastapi.responses import FileResponse, JSONResponse  # noqa: F401
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from rich.console import Console
 
 from cli._version import __version__ as APP_VERSION
@@ -149,6 +150,31 @@ ENV_PATH = _resolve_settings_env_path()
 console = Console()
 logger = logging.getLogger(__name__)
 
+
+def _accept_header(scope: Dict[str, Any]) -> str:
+    """Read the request Accept header from an ASGI scope."""
+    for name, value in scope.get("headers", []):
+        if name.lower() == b"accept":
+            return value.decode("latin-1")
+    return ""
+
+
+class SPAStaticFiles(StaticFiles):
+    """Serve browser SPA paths without turning API 404s into HTML."""
+
+    async def get_response(self, path: str, scope: Dict[str, Any]):
+        from starlette.exceptions import HTTPException as StarletteHTTPException
+
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != status.HTTP_404_NOT_FOUND:
+                raise
+            is_news_api = path.strip("/").startswith("news-api/") or path.strip("/") == "news-api"
+            if is_news_api or "text/html" not in _accept_header(scope):
+                return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": "Not Found"})
+            return await super().get_response("index.html", scope)
+
 # ============================================================================
 # FastAPI Application
 # ============================================================================
@@ -223,6 +249,14 @@ async def _stop_scheduled_research_on_shutdown() -> None:
     """Stop the scheduled research executor on server shutdown."""
     await _stop_channel_runtime()
     await _stop_scheduled_research_executor()
+
+
+async def _close_news_coordinator() -> None:
+    """Release the same lazy coordinator instance used by the news routes."""
+    await news_coordinator.close()
+
+
+app.on_event("shutdown")(_close_news_coordinator)
 
 
 # ============================================================================
@@ -339,6 +373,14 @@ register_watchlist_routes(app)
 # --- Dashboard ---
 from src.api.dashboard_routes import register_dashboard_routes  # noqa: E402
 register_dashboard_routes(app, require_auth=require_auth)
+
+# --- Investment news ---
+# Register before ``serve_main`` can mount the root SPA catch-all.
+from src.api.news_routes import register_news_routes  # noqa: E402
+from src.news.coordinator import get_news_coordinator  # noqa: E402
+
+news_coordinator = get_news_coordinator()
+register_news_routes(app, require_auth=require_auth, coordinator=news_coordinator)
 
 
 # ============================================================================
@@ -550,20 +592,6 @@ def serve_main(argv: list[str] | None = None) -> int:
     import argparse
     import subprocess
     import uvicorn
-    from fastapi.staticfiles import StaticFiles
-    from starlette.exceptions import HTTPException as StarletteHTTPException
-
-    class SPAStaticFiles(StaticFiles):
-        """Serve index.html for browser refreshes on client-side routes."""
-
-        async def get_response(self, path: str, scope: Dict[str, Any]):
-            try:
-                return await super().get_response(path, scope)
-            except StarletteHTTPException as exc:
-                if exc.status_code != status.HTTP_404_NOT_FOUND:
-                    raise
-                return await super().get_response("index.html", scope)
-
     parser = argparse.ArgumentParser(description="Vibe-Trading Server")
     parser.add_argument("--port", type=int, default=8000, help="Listen port (default 8000)")
     parser.add_argument("--host", default="127.0.0.1", help="Bind address")

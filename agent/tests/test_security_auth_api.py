@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -11,13 +12,29 @@ from fastapi.testclient import TestClient
 import api_server
 
 
+_TEST_CLIENT_SUPPORTS_CLIENT = "client" in inspect.signature(TestClient).parameters
+
+if not _TEST_CLIENT_SUPPORTS_CLIENT:
+
+    @api_server.app.middleware("http")
+    async def _compat_test_client_scope(request, call_next):
+        host = request.headers.get("x-test-client-host")
+        if host:
+            request.scope["client"] = (host, 50000)
+        return await call_next(request)
+
+
 def _remote_client() -> TestClient:
     """Return a TestClient that simulates a non-loopback caller."""
+    if not _TEST_CLIENT_SUPPORTS_CLIENT:
+        return TestClient(api_server.app, headers={"X-Test-Client-Host": "203.0.113.10"})
     return TestClient(api_server.app, client=("203.0.113.10", 50000))
 
 
 def _local_client() -> TestClient:
     """Return a TestClient that simulates a loopback caller."""
+    if not _TEST_CLIENT_SUPPORTS_CLIENT:
+        return TestClient(api_server.app, headers={"X-Test-Client-Host": "127.0.0.1"})
     return TestClient(api_server.app, client=("127.0.0.1", 50000))
 
 
@@ -148,6 +165,28 @@ def test_loopback_bypasses_auth_even_when_api_key_configured(
     # Remote with bearer: accepted
     remote_bearer = remote.get("/runs", headers={"Authorization": "Bearer secret"})
     assert remote_bearer.status_code == 200
+
+
+def test_remote_news_api_requires_existing_auth_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("API_AUTH_KEY", "secret")
+    monkeypatch.setattr(api_server, "_API_KEY", "secret")
+
+    response = _remote_client().get("/news-api/snapshot")
+
+    assert response.status_code == 401
+
+
+def test_cross_site_news_refresh_is_rejected_before_coordinator_work() -> None:
+    response = _local_client().post(
+        "/news-api/refresh",
+        headers={"Origin": "https://attacker.example", "Content-Type": "application/json"},
+        json={},
+    )
+
+    assert response.status_code == 403
+    assert response.headers["content-type"].startswith("application/json")
 
 
 def _llm_settings_payload(base_url: str = "https://api.openai.com/v1") -> dict[str, object]:

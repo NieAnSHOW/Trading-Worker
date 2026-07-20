@@ -1,0 +1,84 @@
+# Task 8 Report: FastAPI news routes
+
+## Status
+
+Implemented the authenticated, input-free `/news-api` boundary:
+
+- `GET /news-api/snapshot`
+- `POST /news-api/refresh` returns 202
+- `GET /news-api/refresh/status`
+
+The route module receives both the existing `require_auth` dependency and a
+coordinator instance. `api_server` creates the lazy singleton once, registers
+the routes before `serve_main` may mount the root SPA, and closes that same
+instance during shutdown. The static fallback preserves SPA HTML for `/news`
+but returns a JSON 404 for unknown `/news-api/...` paths.
+
+No handler accepts a body or query parameters, so callers cannot select a
+track, feed URL, or LLM configuration. Rejections and the unavailable
+coordinator response use constant JSON details; no request values, provider
+details, or credentials are logged or returned.
+
+## TDD Evidence
+
+Tests were written before `news_routes.py` existed. The required initial RED
+command was run from the repository root:
+
+```text
+pytest agent/tests/test_news_routes.py agent/tests/test_security_auth_api.py agent/tests/test_spa_fallback.py -q
+```
+
+It initially stopped at collection because importing the pre-existing
+`api_server` registers `src.api.scheduled_routes.delete_scheduled_run` with
+HTTP 204 and a default body response. On this machine (`Python 3.11.0`,
+`FastAPI 0.115.2`), FastAPI raises `AssertionError: Status code 204 must not
+have a response body` at `agent/src/api/scheduled_routes.py:229`. `git show
+493badb` confirmed that route and its registration order were in the baseline.
+The parent task explicitly expanded Task 8 scope for this compatibility
+prerequisite. A subprocess `import api_server` regression test was RED, then
+GREEN after the DELETE route explicitly uses `response_class=Response`,
+`response_model=None`, and returns an empty 204 `Response`. The explicit
+response model is necessary because postponed `-> None` annotations otherwise
+become a truthy FastAPI response model.
+
+An isolated news-route GREEN run uses only `FakeNewsCoordinator`,
+`asyncio.Event`, and `TestClient`; it creates neither a feed client nor an LLM:
+
+The initially added GET-with-body assertion correctly failed (`200 != 422`),
+identifying a local conditional that checked bodies only on POST. It was
+changed to reject a nonempty body for every method, then the isolated suite
+passed. Syntax verification also passed:
+
+```text
+python -m py_compile agent/api_server.py agent/src/api/news_routes.py
+```
+
+The existing auth test fixture has a separate local dependency compatibility
+constraint: Starlette 0.39.2's `TestClient` has no `client=(host, port)`
+constructor argument, while the test suite uses that argument to model local
+and remote peers. The initial full GREEN run therefore had 31 pre-request
+`TypeError` failures. In the Task 8-allowed auth test file only, a conditional
+ASGI scope shim supplies the same peer host via a private test header on old
+Starlette. Newer Starlette continues to use its native `client=` argument;
+production auth and dependencies were not changed.
+
+## Verification
+
+```text
+pytest agent/tests/test_news_routes.py agent/tests/test_security_auth_api.py agent/tests/test_spa_fallback.py -q
+63 passed, 7 warnings
+
+python -m py_compile agent/api_server.py agent/src/api/news_routes.py
+PASS
+```
+
+## Commit
+
+Current `HEAD`: `feat(news): expose authenticated refresh api` (DCO signed).
+
+## Risk
+
+The tested API server import, global auth, static fallback, and shutdown hook
+are now covered. The remaining warnings are existing FastAPI `on_event`
+deprecation warnings and a Starlette multipart parser warning; they do not
+affect test outcomes.
