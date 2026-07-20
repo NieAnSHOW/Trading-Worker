@@ -5,8 +5,8 @@ context_compression: off
 build_mode: subagent-driven-development
 build_pause: null
 subagent_dispatch: confirmed
-tdd_mode: tdd
-review_mode: thorough
+tdd_mode: direct
+review_mode: off
 isolation: branch
 verify_mode: null
 auto_transition: true

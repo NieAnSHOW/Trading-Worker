@@ -41,6 +41,8 @@
 
 ## 7. 集成验证与独立审查
 
+<!-- User decision 2026-07-20: remaining verification is manual. Automated TDD, test execution, and code-review dispatch are disabled. Task 8 remains blocked by the unresolved global unsafe-Origin middleware gap; manual verification does not remediate that finding. -->
+
 - [ ] 7.1 运行资讯后端目标测试、API 安全与 SPA fallback 测试，确认测试不访问真实网络或真实 LLM
 - [ ] 7.2 运行前端 Vitest 目标测试和 `npm run build`，修复类型、路由、开发代理、国际化与生产构建问题
 - [ ] 7.3 使用临时用户数据目录完成端到端降级验证：无快照、部分来源失败、LLM 不可用、刷新失败保留旧快照和进程重启
