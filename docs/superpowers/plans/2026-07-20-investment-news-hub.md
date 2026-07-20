@@ -664,7 +664,7 @@ git commit -s -m "feat(news): expose authenticated refresh api"
 - Consumes: Task 8 JSON 模型。
 - Produces: `api.getNewsSnapshot(signal)`、`api.startNewsRefresh(signal)`、`api.getNewsRefreshStatus(signal)`、`parseNewsSnapshotResponse(value)` 和五语言 `news.*`/`layout.news` keys。
 
-- [ ] **Task 9 Step 1: 写 API 与 locale 失败测试**
+- [x] **Task 9 Step 1: 写 API 与 locale 失败测试**
 
 ```typescript
 it("starts news refresh through the authenticated json client", async () => {
@@ -676,13 +676,13 @@ it("starts news refresh through the authenticated json client", async () => {
 
 locale 测试遍历 `zh-CN/en/ja/ko/ar`，断言 `news.title`、12 个 `news.tracks.*`、fresh/stale/unavailable/partial/AI/error 文案均为非空字符串。
 
-- [ ] **Task 9 Step 2: 运行 RED**
+- [x] **Task 9 Step 2: 运行 RED**
 
 Run: `cd frontend && npx vitest run src/lib/__tests__/api.test.ts src/i18n/__tests__/newsLocales.test.ts src/__tests__/viteProxy.test.ts`
 
 Expected: FAIL，因为方法、proxy 与 locale keys 尚不存在。
 
-- [ ] **Task 9 Step 3: 增加精确 TypeScript 模型与 API 方法**
+- [x] **Task 9 Step 3: 增加精确 TypeScript 模型与 API 方法**
 
 ```typescript
 export type NewsTrackState = "fresh" | "stale" | "unavailable";
@@ -695,22 +695,24 @@ getNewsRefreshStatus: (signal?: AbortSignal) => request<NewsRefreshStatus>("/new
 
 资讯方法先以 `unknown` 接收 JSON，再经运行时 parser 检查 object、固定 12 track IDs、状态 enum、数组字段、字符串长度和 HTTP(S) article URL；无效响应抛现有 `ApiError`，不能仅用 TypeScript cast。API 测试加入缺失 tracks、未知 phase、非 HTTP(S) URL 和超长 title 的拒绝用例。
 
-- [ ] **Task 9 Step 4: 增加 `/news-api` proxy 和五语言文案**
+- [x] **Task 9 Step 4: 增加 `/news-api` proxy 和五语言文案**
 
 把 `"/news-api"` 加入 `PROXY_PATHS`；五个 locale 使用相同 key 结构，赛道 ID 固定为 `ai/semi/robot/auto/energy/bio/space/security/tech/consumer/macro/science`，并同时增加 `layout.news`。locale 测试必须断言 `layout.news` 和全部 `news.*` key。
 
-- [ ] **Task 9 Step 5: 运行 GREEN**
+- [x] **Task 9 Step 5: 运行 GREEN**
 
 Run: `cd frontend && npx vitest run src/lib/__tests__/api.test.ts src/i18n/__tests__/newsLocales.test.ts src/__tests__/viteProxy.test.ts`
 
 Expected: PASS，且 API 请求继续携带现有 Bearer auth header。
 
-- [ ] **Task 9 Step 6: 提交**
+- [x] **Task 9 Step 6: 提交**
 
 ```bash
 git add frontend/src/lib/api.ts frontend/src/lib/__tests__/api.test.ts frontend/vite.config.ts frontend/src/__tests__/viteProxy.test.ts frontend/src/i18n openspec/changes/investment-news-hub/tasks.md
 git commit -s -m "feat(news): add frontend api and translations"
 ```
+
+Acceptance note (2026-07-20): the user chose frontend compatibility with the backend URL parser. The client intentionally preserves the backend's permissive handling of malformed percent escapes and authority port text, while still allowing only HTTP(S) URLs for article links.
 
 ### Task 10: 页面状态 Hook 与轮询生命周期
 
