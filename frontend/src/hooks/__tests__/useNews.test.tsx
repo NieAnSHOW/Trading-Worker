@@ -175,6 +175,25 @@ describe("useNews", () => {
     expect(result.current.isRefreshing).toBe(true);
   });
 
+  it.each([
+    ["failed", () => Promise.resolve(refreshAccepted(false, runningStatus("failed")))],
+    ["cancelled", () => Promise.resolve(refreshAccepted(false, runningStatus("cancelled")))],
+    ["rejected", () => Promise.reject(new Error("refresh unavailable"))],
+  ])("settles initial loading when refresh is %s before its snapshot resolves", async (_outcome, refreshResult) => {
+    const pendingSnapshot = deferred<NewsSnapshotResponse>();
+    apiMock.getNewsSnapshot.mockReturnValue(pendingSnapshot.promise);
+    apiMock.startNewsRefresh.mockImplementation(refreshResult);
+
+    const { result } = renderHook(() => useNews());
+    await waitFor(() => expect(apiMock.getNewsSnapshot).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await result.current.refreshNews(); });
+    await act(async () => { pendingSnapshot.resolve(snapshotResponse("stale")); });
+
+    expect(result.current.snapshot).toBeNull();
+    expect(result.current.isLoading).toBe(false);
+  });
+
   it("aborts distinct snapshot, refresh, and status signals during lifecycle cleanup", async () => {
     const pendingSnapshot = deferred<NewsSnapshotResponse>();
     let refreshSignal: AbortSignal | undefined;

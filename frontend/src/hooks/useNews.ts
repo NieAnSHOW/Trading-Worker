@@ -79,7 +79,7 @@ function reduceNewsState(state: NewsPageState, action: StateAction): NewsPageSta
     case "snapshotFailed":
       return { ...state, isLoading: false, error: action.error };
     case "refreshRequested":
-      return { ...state, isRefreshing: true, error: null };
+      return { ...state, isLoading: false, isRefreshing: true, error: null };
     case "refreshStatus":
       return { ...state, refreshStatus: action.status, isRefreshing: refreshIsRunning(action.status) };
     case "refreshFailed":
