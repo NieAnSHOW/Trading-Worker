@@ -143,6 +143,14 @@ describe("api request helper", () => {
     });
   });
 
+  it("accepts a UUID permitted by the backend status model", async () => {
+    const payload = validNewsSnapshot();
+    payload.refresh.task_id = "00000000-0000-0000-0000-000000000000";
+    const { parseNewsSnapshotResponse } = await loadApiModule();
+
+    expect(parseNewsSnapshotResponse(payload).refresh.task_id).toBe(payload.refresh.task_id);
+  });
+
   it("rejects a snapshot with missing canonical tracks", async () => {
     const payload = validNewsSnapshot();
     payload.snapshot.tracks.pop();

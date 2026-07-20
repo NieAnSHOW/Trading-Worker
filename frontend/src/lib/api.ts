@@ -64,6 +64,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 const NEWS_TRACK_IDS = ["ai", "semi", "robot", "auto", "energy", "bio", "space", "security", "tech", "consumer", "macro", "science"] as const;
 const NEWS_TRACK_STATES = ["fresh", "stale", "unavailable"] as const;
 const NEWS_REFRESH_PHASES = ["idle", "fetching", "normalizing", "enriching", "committing", "succeeded", "failed", "cancelled"] as const;
+const NEWS_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NEWS_PUBLIC_ERRORS: Record<string, string> = {
   ai_unavailable: "AI highlights are unavailable",
   cancelled: "news refresh was cancelled",
@@ -285,7 +286,7 @@ function parseNewsRefreshStatus(value: unknown): NewsRefreshStatus {
   const record = newsRecord(value, ["state", "task_id", "started_at", "completed_at", "processed_endpoints", "successful_endpoints", "failed_endpoints", "processed_tracks", "total_endpoints", "total_tracks", "error"]);
   if (!NEWS_REFRESH_PHASES.includes(record.state as NewsRefreshPhase)) invalidNewsResponse();
   const task_id = record.task_id === null ? null : newsString(record.task_id, 36, 36);
-  if (task_id !== null && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(task_id)) invalidNewsResponse();
+  if (task_id !== null && !NEWS_UUID_PATTERN.test(task_id)) invalidNewsResponse();
   return {
     state: record.state as NewsRefreshPhase,
     task_id,
@@ -328,7 +329,7 @@ export function parseNewsSnapshotResponse(value: unknown): NewsSnapshotResponse 
 function parseNewsRefreshAccepted(value: unknown): NewsRefreshAccepted {
   const record = newsRecord(value, ["task_id", "reused", "status"]);
   const task_id = newsString(record.task_id, 36, 36);
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(task_id)) invalidNewsResponse();
+  if (!NEWS_UUID_PATTERN.test(task_id)) invalidNewsResponse();
   return { task_id, reused: newsBoolean(record.reused), status: parseNewsRefreshStatus(record.status) };
 }
 

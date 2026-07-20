@@ -57,6 +57,15 @@ warning for bundles over 500 kB; no build error occurred.
 
 `git diff --check` also passed.
 
+## UUID Contract Follow-up
+
+The initial parser restricted UUID version and variant bits even though the
+Task 8 Pydantic model uses the general `UUID` type. A valid all-zero UUID is
+therefore legal under the backend contract. A new regression test first failed
+with `Invalid news API response`, then the parser switched to the general
+hexadecimal UUID shape used by that model. The full focused GREEN command was
+rerun and passed with `16 passed`; the production build passed again.
+
 ## Scope
 
 No page, router, layout navigation, global store, or polling hook was added;
