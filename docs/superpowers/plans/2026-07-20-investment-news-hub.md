@@ -626,6 +626,8 @@ handler 仅调用 coordinator，不接受 refresh body、track ID、feed URL 或
 
 在 `agent/api_server.py` 的领域路由装配区、根静态 mount 前执行 `news_coordinator = get_news_coordinator()`，再调用 `register_news_routes(app, require_auth=require_auth, coordinator=news_coordinator)`；新增 shutdown hook 调用 `await news_coordinator.close()`。注册和 shutdown 必须使用同一实例，路由模块不得反向导入 `api_server`。
 
+对于所有不安全请求，现有 CSRF 检查只接受同源或精确属于 `CORS_ORIGINS` 的带 `Origin` 调用；默认集合补充 `http://localhost:5899` 与 `http://127.0.0.1:5899`。其他 loopback Origin 必须在协调器开始前被拒绝；无 `Origin` 的非浏览器客户端保持既有鉴权语义。
+
 - [ ] **Task 8 Step 5: 运行 GREEN 与语法检查**
 
 Run:
