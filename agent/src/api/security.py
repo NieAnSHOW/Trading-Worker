@@ -60,8 +60,9 @@ _QUERY_SECRET_RE = re.compile(r"([?&](?:api_key|ticket|token|access_token)=)[^&#
 
 def _redact_access_log_query(value: str) -> str:
     """Remove illegal news API queries and known credential query values."""
-    if value.startswith("/news-api?"):
-        return "/news-api"
+    path, separator, _ = value.partition("?")
+    if separator and (path == "/news-api" or path.startswith("/news-api/")):
+        return path
     return _QUERY_SECRET_RE.sub(r"\1[redacted]", value)
 
 

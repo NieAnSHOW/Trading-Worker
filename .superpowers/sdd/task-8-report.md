@@ -72,6 +72,54 @@ python -m py_compile agent/api_server.py agent/src/api/news_routes.py
 PASS
 ```
 
+## Access-Log Subroute Redaction Exception
+
+### Root Cause and Repair
+
+The initial access-log follow-up only recognized a value beginning with
+`/news-api?`. As a result, a rejected subroute request such as
+`/news-api/snapshot?llm=sk-canary` retained the arbitrary query value in the
+Uvicorn access log.
+
+The helper now partitions the value on `?` and removes the entire query only
+when the resulting path is exactly `/news-api` or begins with `/news-api/`.
+This retains the path for route diagnosis, does not match `/news-apiary`, and
+leaves ordinary endpoint credential-name redaction unchanged.
+
+### TDD Evidence
+
+RED: the existing `LogRecord` canary was changed first to use
+`/news-api/snapshot?llm=sk-canary&foo=bar`. Before the helper change, it
+failed because the rendered log still contained `sk-canary`.
+
+GREEN: the minimal namespace/path partition change made the focused test pass:
+
+```text
+pytest agent/tests/test_sse_ticket_and_headers.py::test_uvicorn_filter_removes_all_query_values_from_news_api_subroute_access_logs -q
+1 passed, 7 warnings
+```
+
+### Verification
+
+```text
+pytest agent/tests/test_sse_ticket_and_headers.py -q
+5 passed, 3 failed, 7 warnings
+```
+
+The three failures remain the documented Starlette 0.39.2 `TestClient` lack
+of `client=(host, port)` support; the new subroute canary and existing generic
+credential redaction test pass.
+
+```text
+pytest agent/tests/test_news_routes.py agent/tests/test_security_auth_api.py agent/tests/test_spa_fallback.py -q
+64 passed, 21 warnings
+
+python -m py_compile agent/api_server.py agent/src/api/news_routes.py agent/src/api/security.py
+ruff check agent/src/api/security.py agent/tests/test_sse_ticket_and_headers.py
+git diff --check
+PASS
+```
+
 ## Contract Regression Strengthening
 
 The production route implementation was already correct when this follow-up
