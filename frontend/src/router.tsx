@@ -31,6 +31,7 @@ const Dashboard = lazy(() => import("@/pages/Dashboard"));
 const MarketPulse = lazy(() => import("@/pages/MarketPulse"));
 const Indices = lazy(() => import("@/pages/Indices"));
 const Watchlist = lazy(() => import("@/pages/Watchlist"));
+const News = lazy(() => import("@/pages/News"));
 
 
 
@@ -70,6 +71,7 @@ export const router = createBrowserRouter([
       { path: "/market-pulse", element: wrap(MarketPulse) },
       { path: "/indices", element: wrap(Indices) },
       { path: "/watchlist", element: wrap(Watchlist) },
+      { path: "/news", element: wrap(News) },
     ],
   },
 ]);

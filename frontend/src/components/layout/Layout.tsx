@@ -347,6 +347,13 @@ export function Layout() {
             isActive={isActive("/watchlist")}
           />
           <NavLink
+            to="/news"
+            icon={Newspaper}
+            label={t("layout.news")}
+            collapsed={collapsed}
+            isActive={isActive("/news")}
+          />
+          <NavLink
             to="/agent"
             icon={Bot}
             label={t("layout.agent")}
