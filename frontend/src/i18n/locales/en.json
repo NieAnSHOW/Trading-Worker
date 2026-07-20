@@ -8,6 +8,7 @@
     "noEquityData": "No equity data"
   },
   "layout": {
+    "news": "Investment News",
     "section": {
       "workspace": "Workspace",
       "tools": "Tools"
@@ -1119,6 +1120,30 @@
       "changeAmt": "Change",
       "changePct": "Change %",
       "actions": "Actions"
+    }
+  },
+  "news": {
+    "title": "Investment News",
+    "fresh": "Current",
+    "stale": "Data may be out of date",
+    "unavailable": "News is unavailable",
+    "partial": "Some sources are unavailable",
+    "ai": "AI Highlights",
+    "aiUnavailable": "AI highlights are unavailable",
+    "error": "There was a problem loading news",
+    "tracks": {
+      "ai": "Artificial Intelligence",
+      "semi": "Semiconductors",
+      "robot": "Robotics",
+      "auto": "Smart Mobility",
+      "energy": "Clean Energy",
+      "bio": "Biotechnology",
+      "space": "Space",
+      "security": "Cybersecurity",
+      "tech": "Technology",
+      "consumer": "Consumer",
+      "macro": "Macro",
+      "science": "Science"
     }
   }
 }

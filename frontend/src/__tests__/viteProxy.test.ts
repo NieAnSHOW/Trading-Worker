@@ -14,4 +14,8 @@ describe("Vite API proxy config", () => {
     expect(config).toContain('"/settings/llm"');
     expect(config).toContain('"/settings/data-sources"');
   });
+
+  it("proxies investment news API endpoints", () => {
+    expect(config).toContain('"/news-api"');
+  });
 });

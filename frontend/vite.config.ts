@@ -17,6 +17,7 @@ const PROXY_PATHS = [
   "/optional-deps",
   "/watchlist",
   "/dashboard",
+  "/news-api",
 ];
 
 export default defineConfig(({ mode }) => {

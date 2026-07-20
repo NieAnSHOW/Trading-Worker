@@ -3,6 +3,7 @@
     "version": "v0.1.10"
   },
   "layout": {
+    "news": "投資ニュース",
     "section": { "workspace": "Workspace", "tools": "Tools" }, "home": "ホーム",
     "agent": "エージェント",
     "runtime": "ランタイム",
@@ -774,5 +775,29 @@
     "historyUnavailable": "日足データがありません",
     "historyUnavailableHint": "別の指数を選択して再試行してください",
     "selectPrompt": "指数を選択してください"
+  },
+  "news": {
+    "title": "投資ニュース",
+    "fresh": "最新",
+    "stale": "データが古い可能性があります",
+    "unavailable": "ニュースを利用できません",
+    "partial": "一部の情報源を利用できません",
+    "ai": "AI ハイライト",
+    "aiUnavailable": "AI ハイライトを利用できません",
+    "error": "ニュースの読み込み中に問題が発生しました",
+    "tracks": {
+      "ai": "人工知能",
+      "semi": "半導体",
+      "robot": "ロボティクス",
+      "auto": "スマートモビリティ",
+      "energy": "クリーンエネルギー",
+      "bio": "バイオテクノロジー",
+      "space": "宇宙",
+      "security": "サイバーセキュリティ",
+      "tech": "テクノロジー",
+      "consumer": "消費",
+      "macro": "マクロ",
+      "science": "科学"
+    }
   }
 }

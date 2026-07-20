@@ -3,6 +3,7 @@
     "version": "v0.1.10"
   },
   "layout": {
+    "news": "投资资讯",
     "section": {
       "workspace": "工作区",
       "tools": "工具"
@@ -1119,6 +1120,30 @@
       "changeAmt": "涨跌额",
       "changePct": "涨跌幅",
       "actions": "操作"
+    }
+  },
+  "news": {
+    "title": "投资资讯",
+    "fresh": "最新",
+    "stale": "数据可能已过期",
+    "unavailable": "资讯暂不可用",
+    "partial": "部分来源暂不可用",
+    "ai": "AI 要点",
+    "aiUnavailable": "AI 要点暂不可用",
+    "error": "加载资讯时出现问题",
+    "tracks": {
+      "ai": "人工智能",
+      "semi": "半导体",
+      "robot": "机器人",
+      "auto": "智能汽车",
+      "energy": "新能源",
+      "bio": "生物科技",
+      "space": "商业航天",
+      "security": "网络安全",
+      "tech": "科技",
+      "consumer": "消费",
+      "macro": "宏观经济",
+      "science": "科学"
     }
   }
 }
