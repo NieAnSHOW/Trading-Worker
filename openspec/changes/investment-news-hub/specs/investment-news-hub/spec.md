@@ -167,6 +167,10 @@
 - **WHEN** 非本地客户端未提供有效 `API_AUTH_KEY` 访问资讯读取或刷新接口
 - **THEN** 系统按现有远程鉴权策略拒绝请求
 
+#### Scenario: 非同源 loopback 刷新请求
+- **WHEN** 浏览器页面从不属于 `CORS_ORIGINS` 的 loopback Origin 向 `/news-api/refresh` 发起请求
+- **THEN** 系统在协调器开始工作前以 `403` 拒绝该请求；同源、显式可信前端 Origin 或不带 `Origin` 的非浏览器客户端仍按现有鉴权策略处理
+
 #### Scenario: 检查敏感信息边界
 - **WHEN** 生成快照、任务状态、错误摘要、日志或 API 响应
 - **THEN** 这些输出不包含 LLM 密钥、`API_AUTH_KEY` 或其他 Provider 凭据
