@@ -59,6 +59,33 @@ def test_atom_keeps_missing_optional_summary_and_time_as_none() -> None:
     assert items[0].published_at is None
 
 
+@pytest.mark.parametrize(
+    ("payload", "case"),
+    [
+        (
+            b"<rss><channel><item><link>https://news.example/a</link></item></channel></rss>",
+            "missing title",
+        ),
+        (
+            b"<rss><channel><item><title> \t </title><link>https://news.example/a</link></item></channel></rss>",
+            "whitespace title",
+        ),
+        (
+            b"<rss><channel><item><title>RSS entry</title></item></channel></rss>",
+            "RSS missing link",
+        ),
+        (
+            b"<feed xmlns=\"http://www.w3.org/2005/Atom\"><entry><title>Atom entry</title><link /></entry></feed>",
+            "Atom missing href",
+        ),
+    ],
+)
+def test_parse_feed_drops_entries_missing_required_title_or_link(payload: bytes, case: str) -> None:
+    from src.news.feeds import parse_feed
+
+    assert parse_feed(payload, ASSIGNMENT) == (), case
+
+
 def test_malicious_dtd_is_rejected_without_expansion() -> None:
     from src.news.feeds import FeedParseError, parse_feed
 
