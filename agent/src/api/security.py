@@ -58,6 +58,13 @@ _SSE_TICKETS_LOCK = threading.Lock()
 _QUERY_SECRET_RE = re.compile(r"([?&](?:api_key|ticket|token|access_token)=)[^&#\s\"]*", re.IGNORECASE)
 
 
+def _redact_access_log_query(value: str) -> str:
+    """Remove illegal news API queries and known credential query values."""
+    if value.startswith("/news-api?"):
+        return "/news-api"
+    return _QUERY_SECRET_RE.sub(r"\1[redacted]", value)
+
+
 # ============================================================================
 # CORS / host parsing
 # ============================================================================
@@ -154,12 +161,12 @@ class _UvicornQuerySecretRedactionFilter(logging.Filter):
         args = record.args
         if isinstance(args, tuple):
             record.args = tuple(
-                _QUERY_SECRET_RE.sub(r"\1[redacted]", value) if isinstance(value, str) else value
+                _redact_access_log_query(value) if isinstance(value, str) else value
                 for value in args
             )
         elif isinstance(args, dict):
             record.args = {
-                key: _QUERY_SECRET_RE.sub(r"\1[redacted]", value) if isinstance(value, str) else value
+                key: _redact_access_log_query(value) if isinstance(value, str) else value
                 for key, value in args.items()
             }
         return True

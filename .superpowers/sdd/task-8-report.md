@@ -112,3 +112,52 @@ The tested API server import, global auth, static fallback, and shutdown hook
 are now covered. The remaining warnings are existing FastAPI `on_event`
 deprecation warnings and a Starlette multipart parser warning; they do not
 affect test outcomes.
+
+## Access-Log Query Redaction Follow-up
+
+### Root Cause
+
+`api_server` already installs `_UvicornQuerySecretRedactionFilter` on
+`uvicorn.access`, but its generic parameter-name regex only recognized known
+credential names. Uvicorn renders the request path and query from its access
+log record after the response, so a rejected `/news-api?llm=sk-canary&foo=bar`
+request could still write arbitrary query values to the access log. The
+`/news-api` API contract accepts no query parameters, making the entire query
+illegal input rather than a value that should be selectively retained.
+
+### TDD Evidence
+
+RED: added a minimal `LogRecord` canary regression for
+`/news-api?llm=sk-canary&foo=bar`. Before the filter change, the assertion
+failed because the rendered access log contained `sk-canary`.
+
+GREEN: the filter now replaces an access-log argument beginning with
+`/news-api?` with `/news-api` before applying the existing targeted redaction
+to all other paths. The focused regression passed:
+
+```text
+pytest agent/tests/test_sse_ticket_and_headers.py::test_uvicorn_filter_removes_all_query_values_from_news_api_access_logs -q
+1 passed, 7 warnings
+```
+
+The full module was also run. It has three pre-existing failures caused by
+Starlette 0.39.2 not supporting `TestClient(client=(host, port))`; the new
+access-log regression passes, and this follow-up intentionally does not widen
+scope into that test compatibility issue:
+
+```text
+pytest agent/tests/test_sse_ticket_and_headers.py -q
+5 passed, 3 failed, 7 warnings
+```
+
+Task 8 integration and static checks passed:
+
+```text
+pytest agent/tests/test_news_routes.py agent/tests/test_security_auth_api.py agent/tests/test_spa_fallback.py -q
+64 passed, 21 warnings
+
+python -m py_compile agent/api_server.py agent/src/api/news_routes.py agent/src/api/security.py
+ruff check agent/src/api/security.py agent/tests/test_sse_ticket_and_headers.py
+git diff --check
+PASS
+```
