@@ -26,7 +26,7 @@ class LocalizedTitle(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     id: str = Field(min_length=1, max_length=128)
-    title_zh: str = Field(min_length=1, max_length=300)
+    title_zh: str = Field(min_length=1, max_length=300, pattern=r"[\u4e00-\u9fff]")
 
 
 class TrackLLMOutput(BaseModel):
@@ -35,7 +35,9 @@ class TrackLLMOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     titles: list[LocalizedTitle] = Field(max_length=MAX_ITEMS_PER_TRACK)
-    highlights: list[Annotated[str, Field(min_length=1, max_length=300)]] = Field(min_length=3, max_length=5)
+    highlights: list[
+        Annotated[str, Field(min_length=1, max_length=300, pattern=r"[\u4e00-\u9fff]")]
+    ] = Field(min_length=3, max_length=5)
 
 
 async def enrich_tracks(

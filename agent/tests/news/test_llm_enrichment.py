@@ -202,6 +202,8 @@ def test_invalid_model_outputs_safely_downgrade_the_affected_track() -> None:
             {"titles": [], "highlights": ["一", "二", "三", "四", "五", "六"]},
             {"titles": [{"id": "ai-0", "title_zh": "x" * 301}], "highlights": ["一", "二", "三"]},
             {"titles": [], "highlights": ["x" * 301, "二", "三"]},
+            {"titles": [{"id": "ai-0", "title_zh": "ASCII only"}], "highlights": ["一", "二", "三"]},
+            {"titles": [], "highlights": ["ASCII only", "二", "三"]},
             RuntimeError("provider token=secret-value"),
         ]
         for response in cases:
@@ -217,16 +219,16 @@ def test_invalid_model_outputs_safely_downgrade_the_affected_track() -> None:
     _run(run_case())
 
 
-def test_exactly_three_hundred_character_highlight_is_accepted() -> None:
+def test_exactly_three_hundred_character_chinese_highlight_is_accepted() -> None:
     async def run_case() -> None:
         track = make_candidate("ai", 1)
         response = _valid_response([{"id": "ai-0"}])
-        response["highlights"][0] = "x" * 300
+        response["highlights"][0] = "中" + ("x" * 299)
 
         result = await enrich_tracks([track], frozenset({"ai"}), FakeLLMFactory([response]))
 
         assert result[0].ai.available is True
-        assert result[0].ai.highlights[0] == "x" * 300
+        assert result[0].ai.highlights[0] == "中" + ("x" * 299)
 
     _run(run_case())
 

@@ -85,6 +85,7 @@ class PublicFeedClient:
                 follow_redirects=False,
                 trust_env=False,
                 timeout=timeout,
+                limits=httpx.Limits(max_keepalive_connections=0),
             ) as client:
                 while True:
                     target, error_code = await self._validated_target(current_url)
@@ -99,6 +100,7 @@ class PublicFeedClient:
                             headers={
                                 "Host": target.host_header,
                                 "Accept": "application/atom+xml, application/rss+xml, application/xml",
+                                "Connection": "close",
                             },
                             extensions={"sni_hostname": target.hostname},
                         )

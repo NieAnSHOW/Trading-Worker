@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from src.news import catalog
 from src.news.catalog import FIXED_UPSTREAM_COMMIT, FIXED_UPSTREAM_REPOSITORY, group_endpoints, load_catalog
 
 
@@ -21,6 +22,39 @@ STATIC_ARTIFACTS = (
     "upstream_manifest.sha256",
     "THIRD_PARTY_NOTICES.md",
 )
+
+
+def _load_mutated_catalog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutate: object,
+    *,
+    update_sidecar: bool = True,
+    trust_mutated_digest: bool = True,
+) -> None:
+    payload = json.loads((NEWS_DIR / "upstream_manifest.json").read_text(encoding="utf-8"))
+    assert callable(mutate)
+    mutate(payload)
+    manifest_bytes = (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    digest = hashlib.sha256(manifest_bytes).hexdigest()
+    (tmp_path / "upstream_manifest.json").write_bytes(manifest_bytes)
+    sidecar = digest if update_sidecar else GOLDEN_MANIFEST_SHA256
+    (tmp_path / "upstream_manifest.sha256").write_text(sidecar + "\n", encoding="utf-8")
+    monkeypatch.setattr(catalog, "files", lambda _: tmp_path)
+    if trust_mutated_digest:
+        monkeypatch.setattr(catalog, "GOLDEN_MANIFEST_SHA256", digest, raising=False)
+    load_catalog()
+
+
+def _set_source_url(payload: dict[str, object], value: str) -> None:
+    sources = payload["sources"]
+    assert isinstance(sources, list)
+    source = sources[0]
+    assert isinstance(source, dict)
+    track_id = source["track_id"]
+    assert isinstance(track_id, str)
+    source["url"] = value
+    source["id"] = hashlib.sha256(f"{track_id}\0{value}".encode("utf-8")).hexdigest()[:16]
 
 
 def _assert_generated_artifacts_match_tracked(output_dir: Path) -> None:
@@ -72,6 +106,67 @@ def test_manifest_hash_and_mit_notice_are_pinned() -> None:
     assert payload["schema_version"] == 1
     assert "MIT License" in notice.read_text(encoding="utf-8")
     assert "Copyright (c) 2026 simonlin1212" in notice.read_text(encoding="utf-8")
+
+
+def test_load_catalog_rejects_a_manifest_that_does_not_match_its_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(ValueError, match="digest"):
+        _load_mutated_catalog(
+            tmp_path,
+            monkeypatch,
+            lambda payload: payload.update(repository="https://attacker.invalid/catalog"),
+            update_sidecar=False,
+            trust_mutated_digest=False,
+        )
+
+
+def test_load_catalog_rejects_a_rehashed_manifest_that_does_not_match_the_golden_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(ValueError, match="digest"):
+        _load_mutated_catalog(
+            tmp_path,
+            monkeypatch,
+            lambda payload: payload.update(repository="https://attacker.invalid/catalog"),
+            trust_mutated_digest=False,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(lambda payload: payload.update(repository="https://attacker.invalid/catalog"), id="repository"),
+        pytest.param(lambda payload: payload.update(commit="0" * 40), id="commit"),
+        pytest.param(lambda payload: payload["tracks"].pop(), id="track-count"),
+        pytest.param(lambda payload: payload["sources"].pop(), id="source-count"),
+        pytest.param(lambda payload: payload["tracks"][1].update(id=payload["tracks"][0]["id"]), id="track-id"),
+        pytest.param(lambda payload: payload["sources"][0].update(track_id="unknown"), id="source-track"),
+        pytest.param(lambda payload: payload["sources"][0].update(id="0" * 16), id="source-id"),
+        pytest.param(lambda payload: payload["sources"][0].update(url="file:///etc/passwd"), id="source-url"),
+    ],
+)
+def test_load_catalog_fails_closed_when_pinned_contract_invariants_are_mutated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutate: object
+) -> None:
+    with pytest.raises(ValueError, match="catalog"):
+        _load_mutated_catalog(tmp_path, monkeypatch, mutate)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://exa mple.com/rss",
+        "https://./rss",
+        "https://example.com/\0rss",
+        "http://127.0.0.1/rss",
+    ],
+)
+def test_load_catalog_rejects_invalid_urls_even_when_the_stable_id_is_recomputed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    with pytest.raises(ValueError, match="URL"):
+        _load_mutated_catalog(tmp_path, monkeypatch, lambda payload: _set_source_url(payload, url))
 
 
 def test_importer_reads_git_objects_not_dirty_worktree(tmp_path: Path) -> None:

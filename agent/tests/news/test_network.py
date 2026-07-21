@@ -224,6 +224,39 @@ async def test_fetch_revalidates_each_redirect_before_pinning_next_request() -> 
 
 
 @_async_test
+async def test_fetch_disables_keepalive_when_redirect_hostnames_share_an_ip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_async_client = httpx.AsyncClient
+    client_options: list[dict[str, Any]] = []
+
+    def recording_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        client_options.append(kwargs)
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(network.httpx, "AsyncClient", recording_async_client)
+    resolver = FakeResolver(
+        {"feed.example": ["93.184.216.34"], "redirect.example": ["93.184.216.34"]}
+    )
+    transport = FakeTransport(
+        {
+            "https://93.184.216.34/rss": httpx.Response(
+                302, headers={"location": "https://redirect.example/new"}
+            ),
+            "https://93.184.216.34/new": httpx.Response(200, stream=_ByteStream([b"redirected"])),
+        }
+    )
+
+    result = await PublicFeedClient(resolver, transport=transport).fetch(endpoint())
+
+    assert result.body == b"redirected"
+    assert len(client_options) == 1
+    assert client_options[0]["limits"].max_keepalive_connections == 0
+    assert [request.headers["host"] for request in transport.requests] == ["feed.example", "redirect.example"]
+    assert [request.extensions["sni_hostname"] for request in transport.requests] == ["feed.example", "redirect.example"]
+
+
+@_async_test
 async def test_fetch_rejects_an_unsafe_redirect_target() -> None:
     resolver = FakeResolver({"feed.example": ["93.184.216.34"], "internal.example": ["127.0.0.1"]})
     transport = FakeTransport(
