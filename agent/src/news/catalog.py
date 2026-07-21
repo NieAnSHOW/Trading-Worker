@@ -21,6 +21,7 @@ EXPECTED_TRACK_IDS = frozenset(
     {"ai", "semi", "robot", "auto", "energy", "bio", "space", "security", "tech", "consumer", "macro", "science"}
 )
 EXPECTED_SOURCE_COUNT = 108
+EXPECTED_ENDPOINT_COUNT = 106
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,7 @@ def _validate_manifest(data: object) -> None:
 
     assignment_ids: set[str] = set()
     track_urls: set[tuple[str, str]] = set()
+    endpoint_urls: set[str] = set()
     for source in sources:
         if not isinstance(source, dict):
             raise ValueError("catalog source is invalid")
@@ -136,6 +138,9 @@ def _validate_manifest(data: object) -> None:
             raise ValueError("catalog source filters are invalid")
         assignment_ids.add(source_id)
         track_urls.add((track_id, url))
+        endpoint_urls.add(url)
+    if len(endpoint_urls) != EXPECTED_ENDPOINT_COUNT:
+        raise ValueError("catalog endpoint count does not match the fixed upstream contract")
 
 
 def _is_valid_feed_url(value: str) -> bool:

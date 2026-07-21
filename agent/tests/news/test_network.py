@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
+import ssl
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from functools import wraps
+from pathlib import Path
 from typing import Any, Callable
 
 import httpx
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 
 from src.news.catalog import FeedEndpoint
 from src.news import network
@@ -254,6 +261,110 @@ async def test_fetch_disables_keepalive_when_redirect_hostnames_share_an_ip(
     assert client_options[0]["limits"].max_keepalive_connections == 0
     assert [request.headers["host"] for request in transport.requests] == ["feed.example", "redirect.example"]
     assert [request.extensions["sni_hostname"] for request in transport.requests] == ["feed.example", "redirect.example"]
+
+
+@_async_test
+async def test_redirect_to_a_different_hostname_on_the_same_ip_opens_a_new_tls_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "feed.example")])
+    now = dt.datetime.now(dt.timezone.utc)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - dt.timedelta(minutes=1))
+        .not_valid_after(now + dt.timedelta(minutes=5))
+        .add_extension(
+            x509.SubjectAlternativeName(
+                [x509.DNSName("feed.example"), x509.DNSName("redirect.example")]
+            ),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    cert_path = tmp_path / "server-cert.pem"
+    key_path = tmp_path / "server-key.pem"
+    cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+
+    connection_count = 0
+    sni_hostnames: list[str | None] = []
+    request_heads: list[bytes] = []
+    server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_context.load_cert_chain(cert_path, key_path)
+    server_context.set_servername_callback(
+        lambda _socket, server_name, _context: sni_hostnames.append(server_name)
+    )
+
+    async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        nonlocal connection_count
+        connection_count += 1
+        try:
+            while True:
+                try:
+                    request_head = await reader.readuntil(b"\r\n\r\n")
+                except (asyncio.IncompleteReadError, ConnectionResetError):
+                    break
+                request_heads.append(request_head)
+                close_after_response = b"\r\nconnection: close\r\n" in request_head.lower()
+                if request_head.startswith(b"GET /rss "):
+                    writer.write(
+                        f"HTTP/1.1 302 Found\r\n"
+                        f"Location: https://redirect.example:{server_port}/next\r\n"
+                        "Content-Length: 0\r\n"
+                        "Connection: keep-alive\r\n\r\n".encode("ascii")
+                    )
+                else:
+                    writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                    close_after_response = True
+                await writer.drain()
+                if close_after_response:
+                    break
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    server = await asyncio.start_server(handle_connection, "127.0.0.1", 0, ssl=server_context)
+    server_port = server.sockets[0].getsockname()[1]
+    client_context = ssl.create_default_context()
+    client_context.check_hostname = False
+    client_context.verify_mode = ssl.CERT_NONE
+    transport = httpx.AsyncHTTPTransport(verify=client_context)
+
+    def route_to_local_tls_server(parsed: Any, _address: Any, _port: int | None) -> str:
+        return network.urlunsplit(
+            ("https", f"127.0.0.1:{server_port}", parsed.path or "/", parsed.query, "")
+        )
+
+    monkeypatch.setattr(network, "_request_url", route_to_local_tls_server)
+    resolver = FakeResolver(
+        {"feed.example": ["93.184.216.34"], "redirect.example": ["93.184.216.34"]}
+    )
+
+    try:
+        result = await PublicFeedClient(resolver, transport=transport).fetch(
+            endpoint(f"https://feed.example:{server_port}/rss")
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert result.body == b"ok"
+    assert result.error_code is None
+    assert resolver.calls == ["feed.example", "redirect.example"]
+    assert connection_count == 2
+    assert sni_hostnames == ["feed.example", "redirect.example"]
+    assert all(b"\r\nconnection: close\r\n" in request_head.lower() for request_head in request_heads)
 
 
 @_async_test

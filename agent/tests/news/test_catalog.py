@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -151,6 +152,30 @@ def test_load_catalog_fails_closed_when_pinned_contract_invariants_are_mutated(
 ) -> None:
     with pytest.raises(ValueError, match="catalog"):
         _load_mutated_catalog(tmp_path, monkeypatch, mutate)
+
+
+def test_load_catalog_rejects_a_manifest_with_fewer_than_106_unique_endpoints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def duplicate_an_endpoint(payload: dict[str, object]) -> None:
+        sources = payload["sources"]
+        assert isinstance(sources, list)
+        url_counts = Counter(item["url"] for item in sources)
+        existing_assignments = {(item["track_id"], item["url"]) for item in sources}
+        source = next(item for item in sources if url_counts[item["url"]] == 1)
+        replacement = next(
+            item
+            for item in sources
+            if item["url"] != source["url"]
+            and (source["track_id"], item["url"]) not in existing_assignments
+        )
+        source["url"] = replacement["url"]
+        source["id"] = hashlib.sha256(
+            f"{source['track_id']}\0{source['url']}".encode("utf-8")
+        ).hexdigest()[:16]
+
+    with pytest.raises(ValueError, match="endpoint count"):
+        _load_mutated_catalog(tmp_path, monkeypatch, duplicate_an_endpoint)
 
 
 @pytest.mark.parametrize(
