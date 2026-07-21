@@ -1,0 +1,10 @@
+schema: spec-driven
+created: "2026-07-11"
+goal: 在 WebUI 新增自选股盯盘页面，支持实时行情刷新和 Agent 联动分析
+affected_areas:
+  - frontend/src/pages
+  - frontend/src/lib
+  - frontend/src/stores
+  - frontend/src/components/layout
+  - agent/src/api
+  - agent/api_server.py
