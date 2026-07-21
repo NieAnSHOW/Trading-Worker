@@ -72,9 +72,25 @@ const VIP_DEFAULTS = {
   base_url: "https://new.ailjf.cc/v1",
 } as const;
 
-// ponytail: "用户是否主动切换过 provider"的本地标记。
-// 未标记 = 全新安装/未选过其他供应商 → 默认 VIP;一旦在下拉里切换过就置 "1",之后尊重 .env 当前值。
+// ponytail: "用户是否已对 LLM 做过主动选择"的本地标记(切换 provider 或保存过配置)。
+// 未标记 = 全新安装/未配置过 → 默认 VIP;一旦切换 provider 或保存过就置 "1",之后尊重 .env 当前值。
 const PROVIDER_PICKED_KEY = "vt_provider_picked";
+
+// ponytail: VIP 已获取模型列表的本地缓存,跨页面/重挂载保留,避免每次重进设置页都要重新点"获取"。
+const VIP_MODELS_KEY = "vt_vip_models";
+
+function readVipModels(): string[] {
+  try {
+    const raw = localStorage.getItem(VIP_MODELS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((m): m is string => typeof m === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
 
 export function Settings() {
   const { t } = useTranslation();
@@ -106,7 +122,7 @@ export function Settings() {
   // const [flushing, setFlushing] = useState(false);
   const [optionalDeps, setOptionalDeps] = useState<any>(null);
   const [installingPkg, setInstallingPkg] = useState<string | null>(null);
-  const [vipModels, setVipModels] = useState<string[]>([]);
+  const [vipModels, setVipModels] = useState<string[]>(() => readVipModels());
   const [vipModelsLoading, setVipModelsLoading] = useState(false);
 
   // WeChat QR login state
@@ -434,6 +450,11 @@ export function Settings() {
         ...(submittedBaseUrl ? { base_url: submittedBaseUrl } : {}),
       });
       setVipModels(models);
+      try {
+        localStorage.setItem(VIP_MODELS_KEY, JSON.stringify(models));
+      } catch {
+        // ponytail: 配额满/隐私模式 — 静默降级,列表仅本会话有效。
+      }
       if (models[0] && form) {
         setForm({ ...form, model_name: models[0] });
       }
@@ -469,6 +490,8 @@ export function Settings() {
         clear_api_key: clearApiKey,
       });
       setSettings(updated);
+      // 保存即"用户已做出选择":置位后重进页面走 picked 分支,用后端实际值,不再被 VIP 默认值覆盖。
+      localStorage.setItem(PROVIDER_PICKED_KEY, "1");
       setForm(toForm(updated));
       setApiKey("");
       setClearApiKey(false);
