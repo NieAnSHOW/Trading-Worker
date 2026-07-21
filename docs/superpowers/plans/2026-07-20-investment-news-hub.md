@@ -954,21 +954,21 @@ git commit -s -m "test(news): verify packaging and degradation paths"
 - Consumes: Task 12 完成后的完整 change diff、测试输出、Task 11 viewport evidence 与截图、Design Doc 和 canonical delta spec。
 - Produces: 独立 reviewer/verifier 报告；只有报告结论为 PASS 且所有阻塞发现关闭时才勾选 OpenSpec 7.5。
 
-- [ ] **Task 13 Step 1: 派发独立 reviewer/verifier**
+- [x] **Task 13 Step 1: 派发独立 reviewer/verifier**
 
 该任务必须由未参与 Tasks 1-12 实现的独立 agent 执行。审查 prompt 明确要求对照 delta spec 逐项检查：免费范围、108 mapping/106 endpoint/12 track、固定 SHA 与 golden hash、MIT 完整条款、单 sidecar、`require_auth`、SSRF/IP pinning、DTD/XXE、HTTP(S) article URL、密钥边界、赛道级 freshness、单刷新单 LLM 实例、每更新赛道一次调用、16 候选、并发 3、无全文/历史，以及前端两个 viewport。
 
-- [ ] **Task 13 Step 2: 记录带证据的审查报告**
+- [x] **Task 13 Step 2: 记录带证据的审查报告**
 
 报告 frontmatter 记录 change、reviewed commit range、reviewer lane 和结论；正文按 P0/P1/P2/P3 列发现，并附测试命令、viewport screenshot 路径与 `scrollWidth/clientWidth`。如果存在 P0/P1/P2，结论必须为 FAIL，返回相应实现任务修复后重新派发独立复审。
 
-- [ ] **Task 13 Step 3: 仅在 PASS 后勾选 7.5**
+- [x] **Task 13 Step 3: 仅在 PASS 后勾选 7.5**
 
 Run: `rg -n '^result: PASS$' docs/superpowers/reviews/2026-07-20-investment-news-hub-build-review.md`
 
 Expected: 恰好一行 PASS；随后才把 `tasks.md` 的 7.5 改为 `[x]`，并运行 `test -z "$(rg '\- \[ \]' openspec/changes/investment-news-hub/tasks.md || true)"` 确认没有未勾选项。
 
-- [ ] **Task 13 Step 4: 提交独立审查证据**
+- [x] **Task 13 Step 4: 提交独立审查证据**
 
 ```bash
 git add -f docs/superpowers/reviews/2026-07-20-investment-news-hub-build-review.md

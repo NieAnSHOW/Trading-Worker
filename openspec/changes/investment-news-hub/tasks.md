@@ -47,4 +47,4 @@
 - [x] 7.2 运行前端 Vitest 目标测试和 `npm run build`，修复类型、路由、开发代理、国际化与生产构建问题
 - [x] 7.3 使用临时用户数据目录完成端到端降级验证：无快照、部分来源失败、LLM 不可用、刷新失败保留旧快照和进程重启
 - [x] 7.4 验证 MIT notice 实际进入 Python sdist/wheel 与桌面 assemble 资源；新增解析依赖时运行 Tier 0 smoke
-- [ ] 7.5 由独立 reviewer/verifier 对照 spec 检查免费范围、108 映射/106 端点/12 赛道配置与 manifest、单服务、鉴权、XML/链接协议、密钥边界、每赛道要点、无全文/无历史和 MIT notices，并处理所有阻塞发现
+- [x] 7.5 由独立 reviewer/verifier 对照 spec 检查免费范围、108 映射/106 端点/12 赛道配置与 manifest、单服务、鉴权、XML/链接协议、密钥边界、每赛道要点、无全文/无历史和 MIT notices，并处理所有阻塞发现
