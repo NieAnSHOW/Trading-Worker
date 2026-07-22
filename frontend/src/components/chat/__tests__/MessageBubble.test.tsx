@@ -1,7 +1,15 @@
+import { beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MessageBubble } from "../MessageBubble";
 import type { AgentMessage } from "@/types/agent";
+import i18n from "@/i18n";
+
+const { llmUsagePanelSpy } = vi.hoisted(() => ({
+  llmUsagePanelSpy: vi.fn(({ usage }: { usage: AgentMessage["llmUsage"] | null }) => (
+    <div data-testid="llm-usage-panel">{usage?.provider ?? "no usage"}</div>
+  )),
+}));
 
 // Mock react-markdown (heavy dependency, renders raw content in tests)
 vi.mock("react-markdown", () => ({
@@ -17,6 +25,10 @@ vi.mock("../RunCompleteCard", () => ({
   ),
 }));
 
+vi.mock("../LLMUsagePanel", () => ({
+  LLMUsagePanel: llmUsagePanelSpy,
+}));
+
 function makeMsg(overrides: Partial<AgentMessage> = {}): AgentMessage {
   return {
     id: "msg-1",
@@ -28,6 +40,11 @@ function makeMsg(overrides: Partial<AgentMessage> = {}): AgentMessage {
 }
 
 describe("MessageBubble", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+    llmUsagePanelSpy.mockClear();
+  });
+
   describe("user messages", () => {
     it("renders user content in a styled bubble", () => {
       render(<MessageBubble msg={makeMsg({ type: "user", content: "Hello agent!" })} />);
@@ -85,6 +102,31 @@ describe("MessageBubble", () => {
       render(<MessageBubble msg={makeMsg({ type: "run_complete", runId: "run-42" })} />);
       expect(screen.getByTestId("run-complete-card")).toBeInTheDocument();
       expect(screen.getByText("Run: run-42")).toBeInTheDocument();
+    });
+  });
+
+  describe("llm_usage messages", () => {
+    it("passes the complete typed usage summary to LLMUsagePanel", () => {
+      const usage = {
+        provider: "vip_server",
+        model: "gpt-5-mini",
+        metering_eligible: true,
+        totals: {
+          calls: 1,
+          input_tokens: 39,
+          output_tokens: 12,
+          total_tokens: 51,
+        },
+        per_iteration: [],
+      };
+      render(<MessageBubble msg={makeMsg({ type: "llm_usage", content: "raw SSE payload", llmUsage: usage })} />);
+
+      expect(screen.getByTestId("llm-usage-panel")).toHaveTextContent("vip_server");
+      expect(llmUsagePanelSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ usage, compact: true }),
+        undefined,
+      );
+      expect(screen.queryByText("raw SSE payload")).not.toBeInTheDocument();
     });
   });
 

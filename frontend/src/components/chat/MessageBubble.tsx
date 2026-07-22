@@ -7,6 +7,7 @@ import rehypeHighlight from "rehype-highlight";
 import { formatTimestamp } from "@/lib/formatters";
 import type { AgentMessage } from "@/types/agent";
 import { AgentAvatar } from "./AgentAvatar";
+import { LLMUsagePanel } from "./LLMUsagePanel";
 import { RunCompleteCard } from "./RunCompleteCard";
 
 const remarkPlugins = [remarkGfm];
@@ -75,6 +76,15 @@ export const MessageBubble = memo(function MessageBubble({ msg, onRetry }: Props
           </div>
           {ts && <span className="text-[9px] text-muted-foreground/30 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">{ts}</span>}
         </div>
+      </div>
+    );
+  }
+
+  if (msg.type === "llm_usage") {
+    return (
+      <div className="flex gap-3">
+        <AgentAvatar />
+        <LLMUsagePanel usage={msg.llmUsage ?? null} compact />
       </div>
     );
   }

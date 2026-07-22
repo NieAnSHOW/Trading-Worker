@@ -2,6 +2,21 @@
   "app": {
     "version": "v0.1.10"
   },
+  "llmUsage": {
+    "title": "LLM usage",
+    "provider": "Provider",
+    "model": "Model",
+    "calls": "Calls",
+    "inputTokens": "Input tokens",
+    "outputTokens": "Output tokens",
+    "totalTokens": "Total tokens",
+    "cacheReadTokens": "Cache read tokens",
+    "cacheWriteTokens": "Cache write tokens",
+    "cacheUnavailable": "Cache usage not provided by provider",
+    "futureEligible": "Eligible for future platform metering",
+    "localOnly": "Local-only usage record",
+    "noUsage": "No provider-reported usage for this run"
+  },
   "charts": {
     "noPriceData": "No price data",
     "noCorrelationData": "No correlation data",

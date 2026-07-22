@@ -2,6 +2,21 @@
   "app": {
     "version": "v0.1.10"
   },
+  "llmUsage": {
+    "title": "LLM 用量",
+    "provider": "提供商",
+    "model": "模型",
+    "calls": "调用次数",
+    "inputTokens": "输入 Token",
+    "outputTokens": "输出 Token",
+    "totalTokens": "总 Token",
+    "cacheReadTokens": "缓存读取 Token",
+    "cacheWriteTokens": "缓存写入 Token",
+    "cacheUnavailable": "提供商未提供缓存用量",
+    "futureEligible": "符合未来平台计量资格",
+    "localOnly": "仅本地用量记录",
+    "noUsage": "本次运行没有提供商报告的用量"
+  },
   "layout": {
     "news": "投资资讯",
     "section": {

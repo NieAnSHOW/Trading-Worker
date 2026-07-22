@@ -46,3 +46,38 @@ describe("i18n — desktop external shortcuts", () => {
     }
   });
 });
+
+describe("i18n — LLM usage panel", () => {
+  const requiredPaths = [
+    "llmUsage.title",
+    "llmUsage.provider",
+    "llmUsage.model",
+    "llmUsage.calls",
+    "llmUsage.inputTokens",
+    "llmUsage.outputTokens",
+    "llmUsage.totalTokens",
+    "llmUsage.cacheReadTokens",
+    "llmUsage.cacheWriteTokens",
+    "llmUsage.cacheUnavailable",
+    "llmUsage.futureEligible",
+    "llmUsage.localOnly",
+    "llmUsage.noUsage",
+  ];
+
+  const readPath = (source: unknown, path: string) =>
+    path.split(".").reduce<unknown>((value, key) => {
+      if (!value || typeof value !== "object") return undefined;
+      return (value as Record<string, unknown>)[key];
+    }, source);
+
+  it.each([
+    ["en.json", en],
+    ["zh-CN.json", zhCN],
+  ])("%s has all LLM usage panel keys", (_name, locale) => {
+    for (const path of requiredPaths) {
+      const value = readPath(locale, path);
+      expect(value, path).toBeTypeOf("string");
+      expect((value as string).length, path).toBeGreaterThan(0);
+    }
+  });
+});
