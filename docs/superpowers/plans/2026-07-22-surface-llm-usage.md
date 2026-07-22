@@ -181,6 +181,8 @@ export interface LLMUsageDelta extends Omit<LLMUsageIteration, "iter"> {
 
 ### Task 2: 保持运行详情 API 的增强和旧版产物兼容
 
+<!-- 2026-07-22: 用户确认此纯既有兼容性回归任务可直接通过；不构成对全局 tdd_mode 的修改。 -->
+
 **Files:**
 - Modify: `agent/tests/test_run_card.py:232-249`
 - Inspect only: `agent/src/api/models.py:71-103`, `agent/src/api/runs_routes.py:157-165`
