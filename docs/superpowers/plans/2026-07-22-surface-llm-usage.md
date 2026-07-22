@@ -316,6 +316,8 @@ export interface LLMUsageDelta extends Omit<LLMUsageIteration, "iter"> {
 
 ### Task 4: 创建共享、国际化的用量展示组件
 
+<!-- 2026-07-22: 审查通过。接受 Minor 组件测试缺口：未单测单 cache/显式 0 展示，中文未单测 futureEligible/noUsage；实现使用 undefined 判定且 reducer/locale 测试已覆盖主要契约。 -->
+
 **Files:**
 - Create: `frontend/src/components/chat/LLMUsagePanel.tsx`
 - Create: `frontend/src/components/chat/__tests__/LLMUsagePanel.test.tsx`
@@ -330,7 +332,7 @@ export interface LLMUsageDelta extends Omit<LLMUsageIteration, "iter"> {
 - Produces: `LLMUsagePanel({ usage, compact }: { usage: LLMUsageSummary | null; compact?: boolean }): JSX.Element`。
 - Produces: `MessageBubble` 对 `msg.type === "llm_usage"` 的共享组件渲染。
 
-- [ ] **Step 1: 为组件及消息气泡写入失败测试**
+- [x] **Step 1: 为组件及消息气泡写入失败测试**
 
   新组件测试覆盖四类可访问文本：
 
@@ -349,13 +351,13 @@ export interface LLMUsageDelta extends Omit<LLMUsageIteration, "iter"> {
 
   以 `i18n.changeLanguage("zh-CN")` 断言相同状态出现中文文案。`MessageBubble.test.tsx` mock `LLMUsagePanel`，再断言带 `type: "llm_usage"` 的消息将完整 `llmUsage` 传入，且没有落入通用 fallback。
 
-- [ ] **Step 2: 运行测试确认组件尚不存在**
+- [x] **Step 2: 运行测试确认组件尚不存在**
 
   Run: `cd frontend && npx vitest run src/components/chat/__tests__/LLMUsagePanel.test.tsx src/components/chat/__tests__/MessageBubble.test.tsx src/i18n/__tests__/locales.test.ts`
 
   Expected: FAIL，提示 `LLMUsagePanel` 或 locale key 不存在。
 
-- [ ] **Step 3: 实现无障碍、稳定尺寸的共享面板和双语文案**
+- [x] **Step 3: 实现无障碍、稳定尺寸的共享面板和双语文案**
 
   `LLMUsagePanel.tsx` 用 `useTranslation()`，以 `section aria-label={t("llmUsage.title")}` 呈现以下白名单内容：Provider、模型、calls、input、output、total、可选 cache read/write、资格标签。数字通过 `new Intl.NumberFormat(i18n.language).format(value)` 格式化，避免把 `undefined` 当作 `0`。
 
@@ -373,7 +375,7 @@ export interface LLMUsageDelta extends Omit<LLMUsageIteration, "iter"> {
 
   在两个 JSON locale 根级新增 `llmUsage` 对象，含键 `title`、`provider`、`model`、`calls`、`inputTokens`、`outputTokens`、`totalTokens`、`cacheReadTokens`、`cacheWriteTokens`、`cacheUnavailable`、`futureEligible`、`localOnly`、`noUsage`。在 locale 测试的 `requiredPaths` 中为 en/zh-CN 两者逐项加入这些路径。
 
-- [ ] **Step 4: 将聊天用量消息交给共享组件**
+- [x] **Step 4: 将聊天用量消息交给共享组件**
 
   在 `MessageBubble.tsx` 导入 `LLMUsagePanel`，并在 `run_complete` 判断前添加：
 
@@ -390,13 +392,13 @@ export interface LLMUsageDelta extends Omit<LLMUsageIteration, "iter"> {
 
   禁止将 `msg.content` 或任意原始 SSE 字段传给组件。
 
-- [ ] **Step 5: 运行组件、消息和本地化回归测试**
+- [x] **Step 5: 运行组件、消息和本地化回归测试**
 
   Run: `cd frontend && npx vitest run src/components/chat/__tests__/LLMUsagePanel.test.tsx src/components/chat/__tests__/MessageBubble.test.tsx src/i18n/__tests__/locales.test.ts`
 
   Expected: PASS；完整、缓存未提供、空状态、VIP、普通/旧摘要以及中英文均通过。
 
-- [ ] **Step 6: 提交共享呈现层**
+- [x] **Step 6: 提交共享呈现层**
 
   ```bash
   git add frontend/src/components/chat/LLMUsagePanel.tsx frontend/src/components/chat/__tests__/LLMUsagePanel.test.tsx frontend/src/components/chat/MessageBubble.tsx frontend/src/components/chat/__tests__/MessageBubble.test.tsx frontend/src/i18n/locales/en.json frontend/src/i18n/locales/zh-CN.json frontend/src/i18n/__tests__/locales.test.ts
