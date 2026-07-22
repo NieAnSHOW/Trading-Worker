@@ -233,6 +233,8 @@ export interface LLMUsageDelta extends Omit<LLMUsageIteration, "iter"> {
 
 ### Task 3: 建立前端安全类型和可测试的实时归约器
 
+<!-- 2026-07-22: 审查通过。接受两项 Minor：未单独覆盖省略 provider/iter，以及敏感字段未直接在 parser delta 上断言；当前实现和归约输出均已严格白名单，后续重构时可补充。 -->
+
 **Files:**
 - Modify: `frontend/src/lib/api.ts:833-865`
 - Create: `frontend/src/lib/llmUsage.ts`
@@ -244,7 +246,7 @@ export interface LLMUsageDelta extends Omit<LLMUsageIteration, "iter"> {
 - Produces: `parseLLMUsageDelta(data: Record<string, unknown>): LLMUsageDelta | null`、`accumulateLLMUsage(current: LLMUsageSummary | null, delta: LLMUsageDelta): LLMUsageSummary`。
 - Produces: `AgentMessage.llmUsage?: LLMUsageSummary` 与消息类型 `"llm_usage"`。
 
-- [ ] **Step 1: 写入归约器的失败测试**
+- [x] **Step 1: 写入归约器的失败测试**
 
   在 `llmUsage.test.ts` 测试以下完整序列：
 
@@ -265,13 +267,13 @@ export interface LLMUsageDelta extends Omit<LLMUsageIteration, "iter"> {
 
   还要验证：缓存缺失时 totals 没有缓存键；显式 `0` 被保留；负数、NaN、非数字、缺少 provider、缺少迭代或缺少基础 token 时 `parseLLMUsageDelta` 返回 `null`；归约器不保留传入对象的 `api_key`、`prompt` 或 `response` 属性。
 
-- [ ] **Step 2: 运行测试确认辅助模块尚不存在**
+- [x] **Step 2: 运行测试确认辅助模块尚不存在**
 
   Run: `cd frontend && npx vitest run src/lib/__tests__/llmUsage.test.ts`
 
   Expected: FAIL，提示无法解析 `@/lib/llmUsage` 或导出不存在。
 
-- [ ] **Step 3: 在 API 层定义共享契约，在归约器中严格验证**
+- [x] **Step 3: 在 API 层定义共享契约，在归约器中严格验证**
 
   在 `api.ts` 于 `RunData` 前加入本计划“数据契约”中的四个 interface，并给 `RunData` 增加：
 
@@ -299,13 +301,13 @@ export interface LLMUsageDelta extends Omit<LLMUsageIteration, "iter"> {
   llmUsage?: LLMUsageSummary;
   ```
 
-- [ ] **Step 4: 运行归约器测试与 TypeScript 检查**
+- [x] **Step 4: 运行归约器测试与 TypeScript 检查**
 
   Run: `cd frontend && npx vitest run src/lib/__tests__/llmUsage.test.ts && npx tsc -b --noEmit`
 
   Expected: PASS；无 `any` 绕过、无未使用导入，且缓存缺失与零值的断言均通过。
 
-- [ ] **Step 5: 提交前端数据边界**
+- [x] **Step 5: 提交前端数据边界**
 
   ```bash
   git add frontend/src/lib/api.ts frontend/src/lib/llmUsage.ts frontend/src/lib/__tests__/llmUsage.test.ts frontend/src/types/agent.ts
