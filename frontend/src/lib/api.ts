@@ -830,6 +830,38 @@ export interface ValidationData {
   };
 }
 
+export interface LLMUsageTotals {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  calls: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+}
+
+export interface LLMUsageIteration {
+  iter: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+}
+
+export interface LLMUsageDelta extends LLMUsageIteration {
+  provider: string;
+  model: string | null;
+  metering_eligible: boolean;
+}
+
+export interface LLMUsageSummary {
+  provider: string;
+  model: string | null;
+  metering_eligible: boolean;
+  totals: LLMUsageTotals;
+  per_iteration: LLMUsageIteration[];
+}
+
 export interface RunData {
   status: string;
   run_id: string;
@@ -851,6 +883,7 @@ export interface RunData {
   equity_curve?: EquityPoint[];
   trade_log?: Array<Record<string, string>>;
   run_logs?: Array<{ source?: string; line_number?: number; message?: string }>;
+  llm_usage?: LLMUsageSummary;
 }
 
 export interface RunCard {

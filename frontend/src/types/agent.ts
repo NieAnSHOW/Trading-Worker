@@ -1,7 +1,9 @@
+import type { LLMUsageSummary } from "@/lib/api";
+
 /** Chat message types */
 export type AgentMessageType =
   | "user" | "thinking" | "tool_call" | "tool_result"
-  | "answer" | "error" | "run_complete" | "compact" | "swarm_status";
+  | "answer" | "error" | "run_complete" | "compact" | "swarm_status" | "llm_usage";
 
 export type SwarmAgentDisplayStatus =
   | "waiting"
@@ -51,6 +53,7 @@ export interface AgentMessage {
   swarmStatus?: SwarmRunStatus;
   metrics?: Record<string, number>;
   equityCurve?: Array<{ time: string; equity: number | string }>;
+  llmUsage?: LLMUsageSummary;
   /** Phase label for thinking entries */
   stage?: string;
   /** Shadow Account id if render_shadow_report fired in this turn (RunCompleteCard renders a "View Shadow Report" button). */
