@@ -29,7 +29,7 @@
 
 ## 6. Global Usage Aggregation
 
-- [ ] 6.1 以 TDD 扩展 SessionStore 和后端聚合服务，按 attempt 与历史消息关联/去重运行，覆盖时间范围、IANA 时区、总览、趋势、Provider/模型分布、缓存覆盖率及缺失/损坏文件降级。
+- [x] 6.1 以 TDD 扩展 SessionStore 和后端聚合服务，按 attempt 与历史消息关联/去重运行，覆盖时间范围、IANA 时区、总览、趋势、Provider/模型分布、缓存覆盖率及缺失/损坏文件降级。
 - [ ] 6.2 新增受认证保护的 `GET /usage/llm` 契约与 API 测试，支持会话搜索和分页，确保搜索/分页不改变完整时间范围的总览统计。
 
 ## 7. Global Usage Center
