@@ -232,21 +232,57 @@ def test_api_run_response_can_filter_chart_symbol(tmp_path: Path) -> None:
 def test_api_run_response_includes_llm_usage(tmp_path: Path) -> None:
     import api_server
 
-    run_dir = tmp_path / "run_001"
-    run_dir.mkdir()
-    (run_dir / "state.json").write_text('{"status": "success"}\n', encoding="utf-8")
-    llm_usage = {
-        "provider": "deepseek",
-        "model": "deepseek-v3.2",
-        "totals": {"input_tokens": 100, "output_tokens": 25, "total_tokens": 125, "calls": 1},
-        "per_iteration": [{"iter": 1, "input_tokens": 100, "output_tokens": 25, "total_tokens": 125}],
-        "updated_at": "2026-06-14T00:00:00Z",
+    enhanced_dir = tmp_path / "run_enhanced"
+    enhanced_dir.mkdir()
+    (enhanced_dir / "state.json").write_text('{"status": "success"}\n', encoding="utf-8")
+    enhanced = {
+        "provider": "vip_server",
+        "model": "hosted-model",
+        "metering_eligible": True,
+        "totals": {
+            "input_tokens": 100,
+            "output_tokens": 25,
+            "total_tokens": 125,
+            "calls": 1,
+            "cache_read_tokens": 12,
+        },
+        "per_iteration": [
+            {
+                "iter": 1,
+                "input_tokens": 100,
+                "output_tokens": 25,
+                "total_tokens": 125,
+                "cache_read_tokens": 12,
+            }
+        ],
     }
-    (run_dir / "llm_usage.json").write_text(json.dumps(llm_usage), encoding="utf-8")
+    (enhanced_dir / "llm_usage.json").write_text(json.dumps(enhanced), encoding="utf-8")
 
-    response = api_server._build_response_from_run_dir(run_dir, elapsed=0.0)
+    legacy_dir = tmp_path / "run_legacy"
+    legacy_dir.mkdir()
+    (legacy_dir / "state.json").write_text('{"status": "success"}\n', encoding="utf-8")
+    legacy = {
+        "provider": "openai",
+        "model": "legacy-model",
+        "totals": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12, "calls": 1},
+        "per_iteration": [{"iter": 1, "input_tokens": 10, "output_tokens": 2, "total_tokens": 12}],
+    }
+    (legacy_dir / "llm_usage.json").write_text(json.dumps(legacy), encoding="utf-8")
 
-    assert response.llm_usage == llm_usage
+    response = api_server._build_response_from_run_dir(enhanced_dir, elapsed=0.0)
+    legacy_response = api_server._build_response_from_run_dir(legacy_dir, elapsed=0.0)
+
+    sensitive_sentinels = {
+        "api_key": "sentinel-api-key",
+        "login_token": "sentinel-login-token",
+        "prompt": "sentinel-prompt",
+        "response": "sentinel-response",
+    }
+
+    assert response.llm_usage == enhanced
+    assert legacy_response.llm_usage == legacy
+    assert not set(response.llm_usage or {}).intersection(sensitive_sentinels)
+    assert not set(legacy_response.llm_usage or {}).intersection(sensitive_sentinels)
 
 
 def test_runner_artifact_spec_surfaces_run_card_paths() -> None:
