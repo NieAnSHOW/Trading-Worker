@@ -1,14 +1,14 @@
 ## 1. Regression Tests
 
 - [x] 1.1 扩展 AgentLoop 用量测试，覆盖供应商报告的缓存读取/写入字段、累积、原子产物内容，以及不存在凭据或对话内容。
-- [ ] 1.2 扩展运行详情 API 测试，覆盖增强后的用量摘要和仅包含既有 totals 的历史 `llm_usage.json` 文件。
+- [x] 1.2 扩展运行详情 API 测试，覆盖增强后的用量摘要和仅包含既有 totals 的历史 `llm_usage.json` 文件。
 - [ ] 1.3 添加前端单元测试，覆盖实时 `llm_usage` 事件、持久化运行用量、缓存未提供，以及未来可计量 VIP 用量与用户自带 Key 用量的区分。
 
 ## 2. Backend Usage Contract
 
 - [x] 2.1 扩展 AgentLoop 用量规范化和聚合，保留已识别的供应商报告缓存读取/写入 Token 值，不估算缺失值。
 - [x] 2.2 添加向后兼容的 `metering_eligible` 分类，仅标识平台托管 `vip_server` 用量，且不暴露凭据。
-- [ ] 2.3 确保持久化用量产物、SSE 增量和运行详情 API 一致暴露可选的缓存与计量字段，同时保留既有 totals 契约。
+- [x] 2.3 确保持久化用量产物、SSE 增量和运行详情 API 一致暴露可选的缓存与计量字段，同时保留既有 totals 契约。
 
 ## 3. WebUI Data Integration
 

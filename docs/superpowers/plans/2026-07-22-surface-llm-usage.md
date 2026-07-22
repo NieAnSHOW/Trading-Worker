@@ -191,7 +191,7 @@ export interface LLMUsageDelta extends Omit<LLMUsageIteration, "iter"> {
 - Consumes: 运行目录中的任意合法 `llm_usage.json`。
 - Produces: `RunResponse.llm_usage: Optional[Dict[str, Any]]`，原样传递增强摘要与旧版摘要；不改变 endpoint 或创建迁移。
 
-- [ ] **Step 1: 写入运行详情增强/旧版回归测试**
+- [x] **Step 1: 写入运行详情增强/旧版回归测试**
 
   将现有 `test_api_run_response_includes_llm_usage` 的 fixture 增补缓存和资格字段，并添加一个旧版 fixture：
 
@@ -214,17 +214,17 @@ export interface LLMUsageDelta extends Omit<LLMUsageIteration, "iter"> {
 
   额外序列化断言使用含 `api_key`、`login_token`、`prompt` 和 `response` 的哨兵输入。断言 API 不会自行构造或添加这些字段，即 `response.llm_usage` 只等于文件的安全白名单 fixture。
 
-- [ ] **Step 2: 运行测试验证现有读取路径已能承载新字段**
+- [x] **Step 2: 运行测试验证现有读取路径已能承载新字段**
 
   Run: `pytest agent/tests/test_run_card.py -k "llm_usage" -q`
 
   Expected: PASS；若失败，只修正测试夹具或现有宽松 `Dict[str, Any]` 响应模型的兼容性，禁止添加新 API。
 
-- [ ] **Step 3: 保持 API 读取逻辑不做范围外扩张**
+- [x] **Step 3: 保持 API 读取逻辑不做范围外扩张**
 
   确认 `RunResponse.llm_usage` 仍是 optional 字典，`_build_response_from_run_dir` 继续只 `json.loads(llm_usage.json)`。不要在 API 层重算 Token、校验账户、读取凭据或引入 Pydantic 严格模型，因为该层必须兼容历史文件并只作为现有产物的读取面。
 
-- [ ] **Step 4: 提交 API 兼容性回归测试**
+- [x] **Step 4: 提交 API 兼容性回归测试**
 
   ```bash
   git add agent/tests/test_run_card.py
