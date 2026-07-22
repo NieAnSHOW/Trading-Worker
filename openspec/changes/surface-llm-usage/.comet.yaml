@@ -8,13 +8,13 @@ subagent_dispatch: confirmed
 tdd_mode: tdd
 review_mode: standard
 isolation: branch
-verify_mode: null
+verify_mode: full
 auto_transition: true
 base_ref: 6cdaecff5e18cef07f6c999f9a8cdb2d876a65ba
 design_doc: docs/superpowers/specs/2026-07-22-surface-llm-usage-design.md
 plan: docs/superpowers/plans/2026-07-22-surface-llm-usage.md
-verify_result: pending
-verification_report: null
+verify_result: fail
+verification_report: docs/superpowers/reports/2026-07-22-surface-llm-usage-verify.md
 branch_status: pending
 created_at: 2026-07-22
 verified_at: null
