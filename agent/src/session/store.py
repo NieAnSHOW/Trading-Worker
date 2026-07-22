@@ -137,6 +137,10 @@ class SessionStore:
         sessions.sort(key=lambda s: s.updated_at, reverse=True)
         return sessions[:limit]
 
+    def list_all_sessions(self) -> List[Session]:
+        """List every persisted session without the UI list limit."""
+        return self.list_sessions(limit=2**31 - 1)
+
     # ---- Message Append-Only Log ----
 
     def append_message(self, message: Message) -> None:
@@ -178,6 +182,10 @@ class SessionStore:
                     )
         return messages[-limit:]
 
+    def get_all_messages(self, session_id: str) -> List[Message]:
+        """Read the complete message history for aggregation and exports."""
+        return self.get_messages(session_id, limit=2**31 - 1)
+
     # ---- Attempt CRUD ----
 
     def create_attempt(self, attempt: Attempt) -> Attempt:
@@ -212,6 +220,19 @@ class SessionStore:
         if data is None:
             return None
         return Attempt.from_dict(data)
+
+    def list_attempts(self, session_id: str) -> List[Attempt]:
+        """List every attempt for a session in creation order."""
+        attempts_dir = self._session_dir(session_id) / "attempts"
+        if not attempts_dir.exists():
+            return []
+        attempts = []
+        for attempt_dir in attempts_dir.iterdir():
+            if attempt_dir.is_dir():
+                data = self._read_json(attempt_dir / "attempt.json")
+                if data is not None:
+                    attempts.append(Attempt.from_dict(data))
+        return sorted(attempts, key=lambda item: item.created_at)
 
     def update_attempt(self, attempt: Attempt) -> None:
         """Update an execution attempt.
