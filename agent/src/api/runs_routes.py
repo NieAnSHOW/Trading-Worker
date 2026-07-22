@@ -13,6 +13,9 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
+
+from .models import LLMUsageSummary
 
 
 # ---------------------------------------------------------------------------
@@ -157,8 +160,10 @@ def _build_response_from_run_dir(
     llm_usage_path = run_dir / "llm_usage.json"
     if llm_usage_path.exists():
         try:
-            response.llm_usage = json.loads(llm_usage_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+            response.llm_usage = LLMUsageSummary.model_validate_json(
+                llm_usage_path.read_text(encoding="utf-8")
+            )
+        except (json.JSONDecodeError, OSError, ValidationError):
             pass
 
     trades_path = run_dir / "artifacts" / "trades.csv"

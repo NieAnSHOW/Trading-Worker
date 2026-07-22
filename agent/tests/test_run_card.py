@@ -249,12 +249,14 @@ def test_api_run_response_includes_llm_usage(tmp_path: Path) -> None:
         "provider": "vip_server",
         "model": "hosted-model",
         "metering_eligible": True,
+        "prompt": sensitive_sentinels["prompt"],
         "totals": {
             "input_tokens": 100,
             "output_tokens": 25,
             "total_tokens": 125,
             "calls": 1,
             "cache_read_tokens": 12,
+            "api_key": sensitive_sentinels["api_key"],
         },
         "per_iteration": [
             {
@@ -263,6 +265,7 @@ def test_api_run_response_includes_llm_usage(tmp_path: Path) -> None:
                 "output_tokens": 25,
                 "total_tokens": 125,
                 "cache_read_tokens": 12,
+                "response": sensitive_sentinels["response"],
             }
         ],
     }
@@ -284,11 +287,30 @@ def test_api_run_response_includes_llm_usage(tmp_path: Path) -> None:
     response_payload = response.model_dump(mode="json")
     legacy_payload = legacy_response.model_dump(mode="json")
 
-    assert response.llm_usage == enhanced
-    assert legacy_response.llm_usage == legacy
-    assert response_payload["llm_usage"] == enhanced
+    expected_enhanced = {
+        "provider": "vip_server",
+        "model": "hosted-model",
+        "metering_eligible": True,
+        "totals": {
+            "input_tokens": 100,
+            "output_tokens": 25,
+            "total_tokens": 125,
+            "calls": 1,
+            "cache_read_tokens": 12,
+        },
+        "per_iteration": [
+            {
+                "iter": 1,
+                "input_tokens": 100,
+                "output_tokens": 25,
+                "total_tokens": 125,
+                "cache_read_tokens": 12,
+            }
+        ],
+    }
+    assert response_payload["llm_usage"] == expected_enhanced
     assert legacy_payload["llm_usage"] == legacy
-    assert not set(response_payload["llm_usage"] or {}).intersection(sensitive_sentinels)
+    assert json.dumps(response_payload["llm_usage"]).find("sentinel-") == -1
 
 
 def test_runner_artifact_spec_surfaces_run_card_paths() -> None:

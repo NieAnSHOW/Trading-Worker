@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAgentStore } from "@/stores/agent";
@@ -10,6 +10,7 @@ const { apiMock, connectMock, disconnectMock, onStatusChangeMock, handlersRef } 
     getGoal: vi.fn(),
     getLiveStatus: vi.fn(),
     getLLMSettings: vi.fn(),
+    sendMessage: vi.fn(),
     sseUrl: vi.fn(),
   },
   connectMock: vi.fn(),
@@ -64,6 +65,7 @@ describe("Agent attempt completion", () => {
     apiMock.getGoal.mockResolvedValue(null);
     apiMock.getLiveStatus.mockResolvedValue({ global_halted: false, brokers: [] });
     apiMock.getLLMSettings.mockResolvedValue({ sse_timeout_seconds: 90 });
+    apiMock.sendMessage.mockResolvedValue({ attempt_id: "attempt-a" });
     apiMock.sseUrl.mockReturnValue("/sessions/session-a/events");
   });
 
@@ -155,5 +157,87 @@ describe("Agent attempt completion", () => {
     });
 
     expect(screen.getByTestId("live-usage")).toHaveTextContent("2");
+  });
+
+  it("applies a terminal attempt exactly once when polling wins the race with SSE", async () => {
+    const completedMessage = {
+      message_id: "message-a",
+      role: "assistant",
+      content: "Persisted complete",
+      created_at: "2026-07-22T12:00:00Z",
+      linked_attempt_id: "attempt-a",
+      metadata: { run_id: "run-a" },
+    };
+    apiMock.getRun.mockResolvedValue({ metrics: {}, equity_curve: [], artifacts: [], llm_usage: null });
+
+    render(
+      <MemoryRouter initialEntries={["/agent?session=session-a"]}>
+        <Routes><Route path="/agent" element={<Agent />} /></Routes>
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(connectMock).toHaveBeenCalled());
+    apiMock.getSessionMessages.mockResolvedValue([completedMessage]);
+
+    fireEvent.change(screen.getByPlaceholderText("agent.placeholder"), { target: { value: "run it" } });
+    fireEvent.keyDown(screen.getByPlaceholderText("agent.placeholder"), { key: "Enter", code: "Enter" });
+    await waitFor(() => expect(
+      useAgentStore.getState().messages.filter((message) => message.content === "Persisted complete"),
+    ).toHaveLength(1));
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      await handlersRef.current["attempt.completed"]({
+        attempt_id: "attempt-a",
+        run_dir: "/runs/run-a",
+        summary: "SSE duplicate",
+      });
+    });
+
+    expect(useAgentStore.getState().messages.filter((message) => message.content === "SSE duplicate")).toHaveLength(0);
+    expect(useAgentStore.getState().messages.filter((message) => message.content === "Persisted complete")).toHaveLength(1);
+  });
+
+  it("does not let an old polling refresh overwrite a newly activated attempt", async () => {
+    let resolveRun!: (run: Record<string, unknown>) => void;
+    const completedMessage = {
+      message_id: "message-a",
+      role: "assistant",
+      content: "Persisted complete",
+      created_at: "2026-07-22T12:00:00Z",
+      linked_attempt_id: "attempt-a",
+      metadata: { run_id: "run-a" },
+    };
+    apiMock.getRun.mockReturnValue(new Promise((resolve) => { resolveRun = resolve; }));
+
+    render(
+      <MemoryRouter initialEntries={["/agent?session=session-a"]}>
+        <Routes><Route path="/agent" element={<Agent />} /></Routes>
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(connectMock).toHaveBeenCalled());
+    apiMock.getSessionMessages.mockResolvedValue([completedMessage]);
+
+    fireEvent.change(screen.getByPlaceholderText("agent.placeholder"), { target: { value: "run it" } });
+    fireEvent.keyDown(screen.getByPlaceholderText("agent.placeholder"), { key: "Enter", code: "Enter" });
+    await waitFor(() => expect(apiMock.getRun).toHaveBeenCalledWith("run-a"));
+
+    act(() => {
+      useAgentStore.getState().addMessage({
+        id: "message-b",
+        type: "user",
+        content: "New attempt",
+        timestamp: Date.now(),
+      });
+      useAgentStore.getState().setStatus("streaming");
+      handlersRef.current["attempt.created"]({ attempt_id: "attempt-b" });
+    });
+
+    await act(async () => {
+      resolveRun({ metrics: {}, equity_curve: [], artifacts: [], llm_usage: null });
+      await Promise.resolve();
+    });
+
+    expect(useAgentStore.getState().messages.some((message) => message.content === "New attempt")).toBe(true);
+    expect(useAgentStore.getState().status).toBe("streaming");
   });
 });

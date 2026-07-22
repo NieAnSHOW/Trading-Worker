@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, PositiveInt, model_serializer
 
 
 class Artifact(BaseModel):
@@ -53,6 +53,49 @@ class RunInfo(BaseModel):
     end_date: Optional[str] = None
 
 
+class _LLMUsagePayload(BaseModel):
+    """Strict value validation with unknown artifact fields discarded."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    @model_serializer(mode="wrap")
+    def _serialize_without_optional_nulls(self, handler):
+        return {key: value for key, value in handler(self).items() if value is not None}
+
+
+class LLMUsageTotals(_LLMUsagePayload):
+    input_tokens: NonNegativeInt
+    output_tokens: NonNegativeInt
+    total_tokens: NonNegativeInt
+    calls: NonNegativeInt
+    cache_read_tokens: Optional[NonNegativeInt] = None
+    cache_write_tokens: Optional[NonNegativeInt] = None
+
+
+class LLMUsageIteration(_LLMUsagePayload):
+    iter: PositiveInt
+    input_tokens: NonNegativeInt
+    output_tokens: NonNegativeInt
+    total_tokens: NonNegativeInt
+    cache_read_tokens: Optional[NonNegativeInt] = None
+    cache_write_tokens: Optional[NonNegativeInt] = None
+
+
+class LLMUsageSummary(_LLMUsagePayload):
+    provider: str = Field(min_length=1)
+    model: Optional[str] = None
+    metering_eligible: Optional[bool] = None
+    totals: LLMUsageTotals
+    per_iteration: List[LLMUsageIteration]
+
+    @model_serializer(mode="wrap")
+    def _serialize_without_legacy_nulls(self, handler):
+        payload = handler(self)
+        if self.metering_eligible is None:
+            payload.pop("metering_eligible", None)
+        return payload
+
+
 class RunResponse(BaseModel):
     """API response payload for a single run."""
 
@@ -68,7 +111,7 @@ class RunResponse(BaseModel):
     metrics: Optional[BacktestMetrics] = Field(None, description="Backtest metrics")
     artifacts: List[Artifact] = Field(default_factory=list, description="Run artifacts")
     run_card: Optional[Dict[str, Any]] = Field(None, description="Trust Layer run card payload")
-    llm_usage: Optional[Dict[str, Any]] = Field(None, description="Provider-reported AgentLoop usage summary")
+    llm_usage: Optional[LLMUsageSummary] = Field(None, description="Provider-reported AgentLoop usage summary")
 
     equity_curve: Optional[List[Dict[str, Any]]] = Field(None, description="Equity preview")
     trade_log: Optional[List[Dict[str, Any]]] = Field(None, description="Trade preview")

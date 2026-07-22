@@ -7,7 +7,7 @@ import { track } from "@/lib/telemetry";
 import { useAgentStore } from "@/stores/agent";
 import { useSSE } from "@/hooks/useSSE";
 import { ApiError, AUTH_REQUIRED_MESSAGE, api, isAuthRequiredError, type GoalSnapshot, type MandateProposal, type MandateCommitted, type LiveAction, type LiveHalted, type LiveStatus, type LLMUsageSummary } from "@/lib/api";
-import { accumulateLLMUsage, parseLLMUsageDelta } from "@/lib/llmUsage";
+import { accumulateLLMUsage, parseLLMUsageDelta, parseLLMUsageSummary } from "@/lib/llmUsage";
 import { isReportWorthyRun } from "@/lib/runReports";
 import type { AgentMessage, ToolCallEntry } from "@/types/agent";
 import { AgentAvatar } from "@/components/chat/AgentAvatar";
@@ -363,11 +363,19 @@ export function Agent() {
     }
   }, []);
 
-  const loadSessionMessages = useCallback(async (sid: string, gen: number) => {
+  const loadSessionMessages = useCallback(async (
+    sid: string,
+    gen: number,
+    expectedAttemptGeneration?: number,
+  ) => {
     const persistedUsageRunIds = new Set<string>();
+    const isStale = () => (
+      genRef.current !== gen ||
+      (expectedAttemptGeneration !== undefined && attemptGenerationRef.current !== expectedAttemptGeneration)
+    );
     try {
       const msgs = await api.getSessionMessages(sid);
-      if (genRef.current !== gen) return persistedUsageRunIds;
+      if (isStale()) return persistedUsageRunIds;
       const agentMsgs: AgentMessage[] = [];
       for (const m of msgs) {
         const meta = m.metadata as Record<string, unknown> | undefined;
@@ -420,13 +428,14 @@ export function Agent() {
               });
             }
           }
-          if (runDataFetched) {
+          const persistedUsage = parseLLMUsageSummary(runData?.llm_usage);
+          if (runDataFetched && persistedUsage) {
             persistedUsageRunIds.add(runId);
             agentMsgs.push({
               id: m.message_id + "_llm_usage",
               type: "llm_usage",
               content: "",
-              llmUsage: runData?.llm_usage,
+              llmUsage: persistedUsage,
               timestamp: ts + 2,
             });
           }
@@ -434,7 +443,7 @@ export function Agent() {
           agentMsgs.push({ id: m.message_id, type: "answer", content: m.content, timestamp: ts });
         }
       }
-      if (genRef.current !== gen) return persistedUsageRunIds;
+      if (isStale()) return persistedUsageRunIds;
       act().loadHistory(agentMsgs);
       act().setSessionLoading(false);
       act().cacheSession(sid, agentMsgs);
@@ -446,10 +455,10 @@ export function Agent() {
     }
   }, [forceScrollToBottom]);
 
-  const refreshSessionMessages = useCallback(async (sid: string) => {
+  const refreshSessionMessages = useCallback(async (sid: string, expectedAttemptGeneration?: number) => {
     const gen = genRef.current + 1;
     genRef.current = gen;
-    return loadSessionMessages(sid, gen);
+    return loadSessionMessages(sid, gen, expectedAttemptGeneration);
   }, [loadSessionMessages]);
 
   const activateAttempt = useCallback((sid: string, attemptId: string): boolean => {
@@ -488,11 +497,12 @@ export function Agent() {
         if (completedMessage) {
           setReasoningActive(false);
           act().clearStreaming();
-          act().setStatus("idle");
           useAgentStore.setState({ toolCalls: [] });
-          const persistedUsageRunIds = await refreshSessionMessages(sid);
+          const persistedUsageRunIds = await refreshSessionMessages(sid, attemptGeneration);
           const refreshedSessionGeneration = genRef.current;
           if (!isCurrentAttempt(sid, attemptId, refreshedSessionGeneration, attemptGeneration)) return true;
+          activeAttemptRef.current = null;
+          act().setStatus("idle");
           const metadata = completedMessage.metadata as Record<string, unknown> | undefined;
           const runId = typeof metadata?.run_id === "string" ? metadata.run_id : undefined;
           if (!runId || persistedUsageRunIds.has(runId)) {
@@ -639,6 +649,7 @@ export function Agent() {
         const sessionGeneration = genRef.current;
         const attemptGeneration = attemptGenerationRef.current;
         if (!isCurrentAttempt(sid, attemptId, sessionGeneration, attemptGeneration)) return;
+        activeAttemptRef.current = null;
         touch();
         setReasoningActive(false);
         const s = act();
@@ -687,7 +698,12 @@ export function Agent() {
           } catch {
             showCard = true; // fetch failed → show link as fallback
           }
-          if (!isCurrentAttempt(sid, attemptId, sessionGeneration, attemptGeneration)) return;
+          if (
+            act().sessionId !== sid ||
+            genRef.current !== sessionGeneration ||
+            activeAttemptRef.current !== null ||
+            attemptGenerationRef.current !== attemptGeneration
+          ) return;
           if (showCard || shadowId) {
             if (showCard && runMetrics) {
               try { track("feature_use", {}, { name: "backtest_run" }); } catch {}
@@ -700,8 +716,9 @@ export function Agent() {
               timestamp: Date.now(),
             });
           }
-          if (runDataFetched && runData) {
-            s.addMessage({ id: "", type: "llm_usage", content: "", llmUsage: runData.llm_usage, timestamp: Date.now() });
+          const persistedUsage = parseLLMUsageSummary(runData?.llm_usage);
+          if (runDataFetched && persistedUsage) {
+            s.addMessage({ id: "", type: "llm_usage", content: "", llmUsage: persistedUsage, timestamp: Date.now() });
             setLiveLlmUsage(null);
           }
         } else if (shadowId) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accumulateLLMUsage, parseLLMUsageDelta } from "@/lib/llmUsage";
+import { accumulateLLMUsage, parseLLMUsageDelta, parseLLMUsageSummary } from "@/lib/llmUsage";
 
 const validDelta = {
   iter: 1,
@@ -89,5 +89,57 @@ describe("LLM usage reducer", () => {
     expect(summary.per_iteration[0]).not.toHaveProperty("api_key");
     expect(summary.per_iteration[0]).not.toHaveProperty("prompt");
     expect(summary.per_iteration[0]).not.toHaveProperty("response");
+  });
+
+  it("parses persisted summaries through the same recursive whitelist", () => {
+    expect(parseLLMUsageSummary({
+      provider: "vip_server",
+      model: "vip-v1",
+      metering_eligible: true,
+      prompt: "private prompt",
+      totals: {
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15,
+        calls: 1,
+        api_key: "secret",
+      },
+      per_iteration: [{
+        iter: 1,
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15,
+        response: "private response",
+      }],
+    })).toEqual({
+      provider: "vip_server",
+      model: "vip-v1",
+      metering_eligible: true,
+      totals: {
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15,
+        calls: 1,
+      },
+      per_iteration: [{
+        iter: 1,
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15,
+      }],
+    });
+  });
+
+  it.each([
+    [null],
+    [{ ...validDelta }],
+    [{ provider: "openai", model: null, metering_eligible: false, totals: {}, per_iteration: [] }],
+    [{
+      provider: "openai", model: null, metering_eligible: false,
+      totals: { input_tokens: 1, output_tokens: 1, total_tokens: 2, calls: 1 },
+      per_iteration: [{ iter: 0, input_tokens: 1, output_tokens: 1, total_tokens: 2 }],
+    }],
+  ])("rejects an invalid persisted summary: %o", (data) => {
+    expect(parseLLMUsageSummary(data)).toBeNull();
   });
 });

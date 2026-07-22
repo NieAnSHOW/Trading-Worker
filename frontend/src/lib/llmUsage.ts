@@ -13,6 +13,9 @@ const optionalCounter = (value: unknown): number | undefined => {
   return normalized === null ? undefined : normalized;
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
 const copyIteration = (iteration: LLMUsageIteration): LLMUsageIteration => {
   const copy: LLMUsageIteration = {
     iter: iteration.iter,
@@ -66,6 +69,70 @@ export function parseLLMUsageDelta(data: Record<string, unknown>): LLMUsageDelta
     delta.cache_write_tokens = cacheWriteTokens;
   }
   return delta;
+}
+
+export function parseLLMUsageSummary(data: unknown): LLMUsageSummary | null {
+  if (!isRecord(data) || !isRecord(data.totals) || !Array.isArray(data.per_iteration)) {
+    return null;
+  }
+
+  const provider = data.provider;
+  const model = data.model;
+  const meteringEligible = data.metering_eligible;
+  const inputTokens = asNonNegativeInt(data.totals.input_tokens);
+  const outputTokens = asNonNegativeInt(data.totals.output_tokens);
+  const totalTokens = asNonNegativeInt(data.totals.total_tokens);
+  const calls = asNonNegativeInt(data.totals.calls);
+  if (
+    typeof provider !== "string" || provider.trim().length === 0 ||
+    (typeof model !== "string" && model !== null) ||
+    (typeof meteringEligible !== "boolean" && meteringEligible !== undefined) ||
+    inputTokens === null || outputTokens === null || totalTokens === null || calls === null
+  ) {
+    return null;
+  }
+
+  const perIteration: LLMUsageIteration[] = [];
+  for (const value of data.per_iteration) {
+    if (!isRecord(value)) return null;
+    const iter = asNonNegativeInt(value.iter);
+    const iterationInput = asNonNegativeInt(value.input_tokens);
+    const iterationOutput = asNonNegativeInt(value.output_tokens);
+    const iterationTotal = asNonNegativeInt(value.total_tokens);
+    if (iter === null || iter <= 0 || iterationInput === null || iterationOutput === null || iterationTotal === null) {
+      return null;
+    }
+    const iteration: LLMUsageIteration = {
+      iter,
+      input_tokens: iterationInput,
+      output_tokens: iterationOutput,
+      total_tokens: iterationTotal,
+    };
+    const cacheReadTokens = optionalCounter(value.cache_read_tokens);
+    const cacheWriteTokens = optionalCounter(value.cache_write_tokens);
+    if (cacheReadTokens !== undefined) iteration.cache_read_tokens = cacheReadTokens;
+    if (cacheWriteTokens !== undefined) iteration.cache_write_tokens = cacheWriteTokens;
+    perIteration.push(iteration);
+  }
+
+  const totals: LLMUsageTotals = {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    total_tokens: totalTokens,
+    calls,
+  };
+  const cacheReadTokens = optionalCounter(data.totals.cache_read_tokens);
+  const cacheWriteTokens = optionalCounter(data.totals.cache_write_tokens);
+  if (cacheReadTokens !== undefined) totals.cache_read_tokens = cacheReadTokens;
+  if (cacheWriteTokens !== undefined) totals.cache_write_tokens = cacheWriteTokens;
+
+  return {
+    provider,
+    model,
+    metering_eligible: meteringEligible === true,
+    totals,
+    per_iteration: perIteration,
+  };
 }
 
 export function accumulateLLMUsage(
