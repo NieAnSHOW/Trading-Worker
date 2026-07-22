@@ -417,7 +417,7 @@ export interface LLMUsageDelta extends Omit<LLMUsageIteration, "iter"> {
 - Produces: 当前尝试的 `liveLlmUsage: LLMUsageSummary | null`，以及带持久化 `llmUsage` 的 `AgentMessage`。
 - Produces: Run Detail 运行概览中的 `<LLMUsagePanel usage={run.llm_usage ?? null} />`。
 
-- [ ] **Step 1: 增加 SSE 专用分派测试**
+- [x] **Step 1: 增加 SSE 专用分派测试**
 
   在 `useSSE.test.ts` 的 event handling describe 块加入：
 
@@ -434,13 +434,13 @@ export interface LLMUsageDelta extends Omit<LLMUsageIteration, "iter"> {
 
   同时保留现有 `Last-Event-ID` 去重测试，证明同 ID 的重放不会二次调用 handler，进而不会双计。
 
-- [ ] **Step 2: 运行 hook 测试确认事件通道行为**
+- [x] **Step 2: 运行 hook 测试确认事件通道行为**
 
   Run: `cd frontend && npx vitest run src/hooks/__tests__/useSSE.test.ts`
 
   Expected: PASS；`llm_usage` 已在 `knownTypes`，此测试固定其不被未来重构移除。
 
-- [ ] **Step 3: 在 Agent 页面维护实时摘要，并在完成/恢复时采用持久化值**
+- [x] **Step 3: 在 Agent 页面维护实时摘要，并在完成/恢复时采用持久化值**
 
   在组件状态新增：
 
@@ -460,7 +460,7 @@ export interface LLMUsageDelta extends Omit<LLMUsageIteration, "iter"> {
 
   在 `loadSessionMessages` 遍历含 `runId` 的历史 assistant message 时，复用既有 `api.getRun(runId)` 调用：无论是否 `isReportWorthyRun`，只要读取成功，就在该运行的 answer/run card 后追加一个 `llm_usage` 消息，将 `llmUsage` 赋为 `runData.llm_usage`。普通聊天、回测和旧运行遵守同一规则；读取失败不影响现有 answer/run card 回退。
 
-- [ ] **Step 4: 在 Run Detail 概览复用面板**
+- [x] **Step 4: 在 Run Detail 概览复用面板**
 
   导入 `LLMUsagePanel`，在 `run.metrics` 之后添加：
 
@@ -470,13 +470,13 @@ export interface LLMUsageDelta extends Omit<LLMUsageIteration, "iter"> {
 
   该位置使回测报告链接打开的用户也能看到持久化摘要。不要改变 Tabs、图表加载、交易/验证/代码区域或下载功能。
 
-- [ ] **Step 5: 运行会话与前端回归测试**
+- [x] **Step 5: 运行会话与前端回归测试**
 
   Run: `cd frontend && npx vitest run src/hooks/__tests__/useSSE.test.ts src/lib/__tests__/llmUsage.test.ts src/components/chat/__tests__/LLMUsagePanel.test.tsx src/components/chat/__tests__/MessageBubble.test.tsx src/i18n/__tests__/locales.test.ts`
 
   Expected: PASS；确保 SSE 是增量归约、同 Event ID 不会双计，历史/完成读取以 `RunData.llm_usage` 为准，Run Detail 能安全渲染 `undefined` 旧摘要。
 
-- [ ] **Step 6: 提交页面集成**
+- [x] **Step 6: 提交页面集成**
 
   ```bash
   git add frontend/src/pages/Agent.tsx frontend/src/pages/RunDetail.tsx frontend/src/hooks/__tests__/useSSE.test.ts

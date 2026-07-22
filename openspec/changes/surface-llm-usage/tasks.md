@@ -13,7 +13,7 @@
 ## 3. WebUI Data Integration
 
 - [x] 3.1 为运行级和增量 LLM 用量数据添加向后兼容的 TypeScript 类型，包括可选缓存和计量字段。
-- [ ] 3.2 在 Agent 运行状态中消费 `llm_usage` SSE 事件，并从既有运行详情响应填充已完成或恢复的运行。
+- [x] 3.2 在 Agent 运行状态中消费 `llm_usage` SSE 事件，并从既有运行详情响应填充已完成或恢复的运行。
 
 ## 4. Usage Presentation
 
