@@ -24,6 +24,7 @@ import rehypeHighlight from "rehype-highlight";
 import { CandlestickChart } from "@/components/charts/CandlestickChart";
 import { EquityChart } from "@/components/charts/EquityChart";
 import { MetricsCard } from "@/components/chat/MetricsCard";
+import { LLMUsagePanel } from "@/components/chat/LLMUsagePanel";
 import { ValidationPanel } from "@/components/charts/ValidationPanel";
 import { Skeleton, SkeletonMetrics, SkeletonChart } from "@/components/common/Skeleton";
 import { ErrorBoundary } from "@/components/common/ErrorBoundary";
@@ -260,6 +261,7 @@ export function RunDetail() {
         </div>
         {run.prompt && <p className="text-sm text-muted-foreground">{run.prompt}</p>}
         {run.metrics && <MetricsCard metrics={run.metrics as Record<string, number>} />}
+        <LLMUsagePanel usage={run.llm_usage ?? null} />
 
         <div className="flex items-center gap-1">
           {TABS.filter(t => !t.hidden).map(({ id, label, icon: Icon }) => (

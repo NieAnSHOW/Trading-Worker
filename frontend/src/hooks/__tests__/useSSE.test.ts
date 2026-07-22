@@ -196,6 +196,21 @@ describe("useSSE — event handling", () => {
     expect(textDeltas[0]).toEqual({ content: "hello" });
   });
 
+  it("dispatches llm usage events to the dedicated handler", async () => {
+    const events: unknown[] = [];
+    const { result } = renderHook(() => useSSE());
+
+    act(() =>
+      result.current.connect("http://test/events", {
+        llm_usage: (data) => events.push(data),
+      }),
+    );
+    await flushTicketRequest();
+
+    act(() => MockEventSource.latest.emit("llm_usage", { iter: 1, input_tokens: 1 }, "usage-1"));
+    expect(events).toEqual([{ iter: 1, input_tokens: 1 }]);
+  });
+
   it("dispatches reasoning progress events", async () => {
     const reasoningEvents: unknown[] = [];
     const { result } = renderHook(() => useSSE());

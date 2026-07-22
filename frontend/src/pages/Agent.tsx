@@ -6,7 +6,8 @@ import { toast } from "sonner";
 import { track } from "@/lib/telemetry";
 import { useAgentStore } from "@/stores/agent";
 import { useSSE } from "@/hooks/useSSE";
-import { ApiError, AUTH_REQUIRED_MESSAGE, api, isAuthRequiredError, type GoalSnapshot, type MandateProposal, type MandateCommitted, type LiveAction, type LiveHalted, type LiveStatus } from "@/lib/api";
+import { ApiError, AUTH_REQUIRED_MESSAGE, api, isAuthRequiredError, type GoalSnapshot, type MandateProposal, type MandateCommitted, type LiveAction, type LiveHalted, type LiveStatus, type LLMUsageSummary } from "@/lib/api";
+import { accumulateLLMUsage, parseLLMUsageDelta } from "@/lib/llmUsage";
 import { isReportWorthyRun } from "@/lib/runReports";
 import type { AgentMessage, ToolCallEntry } from "@/types/agent";
 import { AgentAvatar } from "@/components/chat/AgentAvatar";
@@ -18,6 +19,7 @@ import { ToolProgressIndicator } from "@/components/chat/ToolProgressIndicator";
 import { MandateProposalCard } from "@/components/chat/MandateProposalCard";
 import { RunnerStatus } from "@/components/chat/RunnerStatus";
 import { SwarmStatusCard } from "@/components/chat/SwarmStatusCard";
+import { LLMUsagePanel } from "@/components/chat/LLMUsagePanel";
 import {
   applySwarmEvent,
   buildSwarmStatusFromStarted,
@@ -257,6 +259,7 @@ export function Agent() {
    * items (audit M2: always-available global halt — SPEC Consent §4). */
   const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
   const [reasoningActive, setReasoningActive] = useState(false);
+  const [liveLlmUsage, setLiveLlmUsage] = useState<LLMUsageSummary | null>(null);
   /* The status endpoint is not wired on every backend; a 404/501 hides the panel
    * and removes status from the kill-switch visibility condition. */
   const [liveStatusUnavailable, setLiveStatusUnavailable] = useState(false);
@@ -359,9 +362,10 @@ export function Agent() {
   }, []);
 
   const loadSessionMessages = useCallback(async (sid: string, gen: number) => {
+    const persistedUsageRunIds = new Set<string>();
     try {
       const msgs = await api.getSessionMessages(sid);
-      if (genRef.current !== gen) return;
+      if (genRef.current !== gen) return persistedUsageRunIds;
       const agentMsgs: AgentMessage[] = [];
       for (const m of msgs) {
         const meta = m.metadata as Record<string, unknown> | undefined;
@@ -375,22 +379,30 @@ export function Agent() {
           if (m.content && m.content !== "Strategy execution completed.") {
             agentMsgs.push({ id: m.message_id + "_ans", type: "answer", content: m.content, timestamp: ts });
           }
+          // Fetch once for the run card and its persisted LLM-usage summary.
+          let runDataFetched = false;
+          let runData: Awaited<ReturnType<typeof api.getRun>> | undefined;
+          try {
+            runData = await api.getRun(runId);
+            runDataFetched = true;
+          } catch {
+            // Preserve the previous run-card fallback when the detail request fails.
+          }
           if (metrics && Object.keys(metrics).length > 0) {
             agentMsgs.push({ id: m.message_id, type: "run_complete", content: "", runId, metrics, timestamp: ts + 1 });
           } else {
-            // Fetch run data to check report-worthiness; show fallback card if fetch fails
+            // Show a card for report-worthy runs, with the existing fetch-failure fallback.
             let fetchedMetrics: Record<string, number> | undefined;
             let fetchedCurve: Array<{ time: string; equity: number }> | undefined;
             let showCard = false;
-            try {
-              const runData = await api.getRun(runId);
+            if (runData) {
               if (isReportWorthyRun(runData)) {
                 fetchedMetrics = runData.metrics;
                 fetchedCurve = runData.equity_curve?.map((e) => ({ time: e.time, equity: Number(e.equity) }));
                 showCard = true;
               }
               // succeeded but not report-worthy (plain chat turn) → skip card
-            } catch {
+            } else {
               // fetch failed (auth/404/network) → can't tell, show link as fallback
               showCard = true;
             }
@@ -406,24 +418,36 @@ export function Agent() {
               });
             }
           }
+          if (runDataFetched) {
+            persistedUsageRunIds.add(runId);
+            agentMsgs.push({
+              id: m.message_id + "_llm_usage",
+              type: "llm_usage",
+              content: "",
+              llmUsage: runData?.llm_usage,
+              timestamp: ts + 2,
+            });
+          }
         } else {
           agentMsgs.push({ id: m.message_id, type: "answer", content: m.content, timestamp: ts });
         }
       }
-      if (genRef.current !== gen) return;
+      if (genRef.current !== gen) return persistedUsageRunIds;
       act().loadHistory(agentMsgs);
       act().setSessionLoading(false);
       act().cacheSession(sid, agentMsgs);
       setTimeout(() => forceScrollToBottom(), 50);
+      return persistedUsageRunIds;
     } catch {
       act().setSessionLoading(false);
+      return persistedUsageRunIds;
     }
   }, [forceScrollToBottom]);
 
   const refreshSessionMessages = useCallback(async (sid: string) => {
     const gen = genRef.current + 1;
     genRef.current = gen;
-    await loadSessionMessages(sid, gen);
+    return loadSessionMessages(sid, gen);
   }, [loadSessionMessages]);
 
   const syncCompletedAttempt = useCallback(async (sid: string, attemptId?: string) => {
@@ -431,16 +455,22 @@ export function Agent() {
     for (let i = 0; i < 3; i += 1) {
       try {
         const storedMessages = await api.getSessionMessages(sid);
-        const completed = storedMessages.some(
+        const completedMessage = storedMessages.find(
           (message) => message.role === "assistant" && message.linked_attempt_id === attemptId,
         );
-        if (completed) {
+        if (completedMessage) {
           if (act().sessionId !== sid) return true;
           setReasoningActive(false);
           act().clearStreaming();
           act().setStatus("idle");
           useAgentStore.setState({ toolCalls: [] });
-          await refreshSessionMessages(sid);
+          const persistedUsageRunIds = await refreshSessionMessages(sid);
+          if (act().sessionId !== sid) return true;
+          const metadata = completedMessage.metadata as Record<string, unknown> | undefined;
+          const runId = typeof metadata?.run_id === "string" ? metadata.run_id : undefined;
+          if (!runId || persistedUsageRunIds.has(runId)) {
+            setLiveLlmUsage(null);
+          }
           return true;
         }
       } catch {
@@ -551,7 +581,16 @@ export function Agent() {
 
       compact: () => { touch(); },
 
+      llm_usage: (d) => {
+        const delta = parseLLMUsageDelta(d);
+        if (!delta) return;
+        setLiveLlmUsage((current) => accumulateLLMUsage(current, delta));
+        touch();
+        scrollToBottom();
+      },
+
       "attempt.created": () => {
+        setLiveLlmUsage(null);
         touch();
         // Backend has created a new attempt — ensure streaming state is active
         // even if we connected mid-stream (SSE replay / page reload).
@@ -601,8 +640,11 @@ export function Agent() {
           let runMetrics: Record<string, number> | undefined;
           let runCurve: Array<{ time: string; equity: number }> | undefined;
           let showCard = false;
+          let runDataFetched = false;
+          let runData: Awaited<ReturnType<typeof api.getRun>> | undefined;
           try {
-            const runData = await api.getRun(runId);
+            runData = await api.getRun(runId);
+            runDataFetched = true;
             if (isReportWorthyRun(runData)) {
               runMetrics = runData.metrics;
               runCurve = runData.equity_curve?.map(e => ({ time: e.time, equity: Number(e.equity) }));
@@ -623,8 +665,15 @@ export function Agent() {
               timestamp: Date.now(),
             });
           }
+          if (runDataFetched && runData) {
+            s.addMessage({ id: "", type: "llm_usage", content: "", llmUsage: runData.llm_usage, timestamp: Date.now() });
+            setLiveLlmUsage(null);
+          }
         } else if (shadowId) {
           s.addMessage({ id: "", type: "run_complete", content: "", shadowId, timestamp: Date.now() });
+          setLiveLlmUsage(null);
+        } else {
+          setLiveLlmUsage(null);
         }
 
         // Reset
@@ -636,6 +685,7 @@ export function Agent() {
       "attempt.failed": (d) => {
         touch();
         setReasoningActive(false);
+        setLiveLlmUsage(null);
         act().clearStreaming();
         act().addMessage({ id: "", type: "error", content: String(d.error || "Execution failed"), timestamp: Date.now() });
         act().setStatus("idle");
@@ -757,6 +807,7 @@ export function Agent() {
       doDisconnect();
       // Live-channel timeline items are per-session; clear on switch.
       setLiveItems([]);
+      setLiveLlmUsage(null);
       setCommittedMandates({});
       setLiveHalted(null);
       setLiveStatusRefresh((n) => n + 1);
@@ -790,6 +841,7 @@ export function Agent() {
       genRef.current += 1;
       doDisconnect();
       setLiveItems([]);
+      setLiveLlmUsage(null);
       setCommittedMandates({});
       setLiveHalted(null);
       setLiveStatusRefresh((n) => n + 1);
@@ -1236,7 +1288,7 @@ export function Agent() {
           })}
 
           {/* Pre-stream placeholder: visible after Send, before first SSE event */}
-          {status === "streaming" && !reasoningActive && !streamingText && toolCalls.length === 0 && !messages.some((m) => m.type === "swarm_status" && m.swarmStatus?.status === "running") && (
+          {status === "streaming" && !reasoningActive && !streamingText && toolCalls.length === 0 && liveLlmUsage === null && !messages.some((m) => m.type === "swarm_status" && m.swarmStatus?.status === "running") && (
             <div className="flex gap-3">
               <AgentAvatar />
               <div className="flex-1 min-w-0 flex items-center gap-2 text-xs text-muted-foreground pt-1">
@@ -1247,7 +1299,7 @@ export function Agent() {
           )}
 
           {/* Live streaming area: text + tool status */}
-          {(streamingText || reasoningActive || (status === "streaming" && toolCalls.length > 0)) && (
+          {(streamingText || reasoningActive || liveLlmUsage !== null || (status === "streaming" && toolCalls.length > 0)) && (
             <div className="flex gap-3">
               <AgentAvatar />
               <div className="flex-1 min-w-0 space-y-1.5">
@@ -1266,6 +1318,7 @@ export function Agent() {
                 {status === "streaming" && toolCalls.length > 0 && (
                   <ToolProgressIndicator toolCalls={toolCalls} />
                 )}
+                {liveLlmUsage && <LLMUsagePanel usage={liveLlmUsage} compact />}
               </div>
             </div>
           )}
