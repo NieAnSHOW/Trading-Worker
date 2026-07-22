@@ -85,6 +85,22 @@ def _coerce_usage_int(value: Any) -> int:
         return 0
 
 
+def _read_usage_alias(usage: dict[str, Any], paths: tuple[tuple[str, ...], ...]) -> int | None:
+    """Read one provider usage count from an explicit, trusted path."""
+    for path in paths:
+        current: Any = usage
+        for key in path:
+            if not isinstance(current, dict) or key not in current:
+                break
+            current = current[key]
+        else:
+            try:
+                return max(0, int(current))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def _normalize_llm_usage(usage: Any) -> dict[str, int] | None:
     """Normalize provider-reported usage metadata without estimating tokens."""
     if usage is None:
@@ -102,11 +118,35 @@ def _normalize_llm_usage(usage: Any) -> dict[str, int] | None:
         total_tokens = input_tokens + output_tokens
     if not (input_tokens or output_tokens or total_tokens):
         return None
-    return {
+    normalized = {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
     }
+    cache_read_tokens = _read_usage_alias(
+        usage,
+        (
+            ("input_token_details", "cache_read"),
+            ("input_token_details", "cached"),
+            ("prompt_tokens_details", "cached_tokens"),
+            ("cache_read_input_tokens",),
+            ("cache_read_tokens",),
+        ),
+    )
+    cache_write_tokens = _read_usage_alias(
+        usage,
+        (
+            ("input_token_details", "cache_creation"),
+            ("cache_creation_input_tokens",),
+            ("cache_creation_tokens",),
+            ("cache_write_tokens",),
+        ),
+    )
+    if cache_read_tokens is not None:
+        normalized["cache_read_tokens"] = cache_read_tokens
+    if cache_write_tokens is not None:
+        normalized["cache_write_tokens"] = cache_write_tokens
+    return normalized
 
 
 def _new_llm_usage_summary(llm: Any) -> dict[str, Any]:
@@ -116,6 +156,7 @@ def _new_llm_usage_summary(llm: Any) -> dict[str, Any]:
     return {
         "provider": provider,
         "model": model,
+        "metering_eligible": provider.strip().lower() == "vip_server",
         "totals": {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -142,6 +183,9 @@ def _record_llm_usage(
     totals["output_tokens"] = int(totals.get("output_tokens") or 0) + normalized["output_tokens"]
     totals["total_tokens"] = int(totals.get("total_tokens") or 0) + normalized["total_tokens"]
     totals["calls"] = int(totals.get("calls") or 0) + 1
+    for field in ("cache_read_tokens", "cache_write_tokens"):
+        if field in normalized:
+            totals[field] = int(totals.get(field) or 0) + normalized[field]
     summary.setdefault("per_iteration", []).append({"iter": iteration, **normalized})
     summary["updated_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -743,6 +787,9 @@ class AgentLoop:
                         {
                             **usage_delta,
                             "iter": current_iter,
+                            "provider": llm_usage_summary["provider"],
+                            "model": llm_usage_summary["model"],
+                            "metering_eligible": llm_usage_summary["metering_eligible"],
                         },
                     )
                 if active_goal_id and session_id:

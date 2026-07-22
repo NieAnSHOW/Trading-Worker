@@ -18,7 +18,7 @@ from typing import Any, Callable
 
 import pytest
 
-from src.agent.loop import AgentLoop
+from src.agent.loop import AgentLoop, _normalize_llm_usage
 from src.providers.chat import ProviderStreamError
 
 
@@ -67,6 +67,50 @@ class _StubLLMWithUsage:
         response = _StubLLMResponse()
         response.content = "done"
         response.usage_metadata = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+        return response
+
+    def chat(self, messages: list[dict[str, Any]], **_: Any) -> _StubLLMResponse:
+        return _StubLLMResponse()
+
+
+class _StubLLMWithCachedUsage:
+    """Two-response LLM stub with provider-reported cache accounting."""
+
+    model_name = "stub-model"
+
+    def __init__(self) -> None:
+        self._calls = 0
+
+    def stream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[Any] | None = None,
+        on_text_chunk: Callable[[str], None] | None = None,
+        on_reasoning_chunk: Callable[[str], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> _StubLLMResponse:
+        self._calls += 1
+        response = _StubLLMResponse()
+        if self._calls == 1:
+            response.has_tool_calls = True
+            response.tool_calls = [SimpleNamespace(id="compact-1", name="compact", arguments={})]
+            response.usage_metadata = {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+                "input_token_details": {"cache_read": 4, "cache_creation": 3},
+                "api_key": "not-for-artifacts",
+                "prompt": "secret-prompt",
+            }
+        else:
+            response.content = "done"
+            response.usage_metadata = {
+                "input_tokens": 20,
+                "output_tokens": 4,
+                "total_tokens": 24,
+                "prompt_tokens_details": {"cached_tokens": 7},
+                "login_token": "not-for-artifacts",
+            }
         return response
 
     def chat(self, messages: list[dict[str, Any]], **_: Any) -> _StubLLMResponse:
@@ -232,6 +276,7 @@ def test_usage_metadata_is_persisted_to_run_artifact(tmp_path: Path, monkeypatch
     payload = json.loads(usage_path.read_text(encoding="utf-8"))
     assert payload["provider"] == "pytest-provider"
     assert payload["model"] == "stub-model"
+    assert payload["metering_eligible"] is False
     assert payload["totals"] == {
         "input_tokens": 10,
         "output_tokens": 5,
@@ -242,6 +287,118 @@ def test_usage_metadata_is_persisted_to_run_artifact(tmp_path: Path, monkeypatch
         {"iter": 1, "input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
     ]
     assert payload["updated_at"].endswith("Z")
+
+
+def test_usage_metadata_persists_cache_fields_and_emits_safe_sse_delta(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Persist only normalized cache counts and derived provider metadata."""
+    monkeypatch.setenv("LANGCHAIN_PROVIDER", "vip_server")
+    events: list[tuple[str, dict[str, Any]]] = []
+    agent = _build_agent(_StubLLMWithCachedUsage(), max_iter=2, tmp_run_dir=tmp_path / "run")
+    agent._event_callback = lambda event_type, data: events.append((event_type, data))
+    agent._process_tool_calls = lambda *_: (False, "")  # type: ignore[method-assign]
+
+    result = agent.run(user_message="anything")
+
+    assert result["status"] == "success"
+    payload = json.loads((tmp_path / "run" / "llm_usage.json").read_text(encoding="utf-8"))
+    assert payload["metering_eligible"] is True
+    assert payload["totals"] == {
+        "input_tokens": 30,
+        "output_tokens": 9,
+        "total_tokens": 39,
+        "calls": 2,
+        "cache_read_tokens": 11,
+        "cache_write_tokens": 3,
+    }
+    assert payload["per_iteration"] == [
+        {
+            "iter": 1,
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "total_tokens": 15,
+            "cache_read_tokens": 4,
+            "cache_write_tokens": 3,
+        },
+        {
+            "iter": 2,
+            "input_tokens": 20,
+            "output_tokens": 4,
+            "total_tokens": 24,
+            "cache_read_tokens": 7,
+        },
+    ]
+    assert "api_key" not in json.dumps(payload)
+    assert "secret-prompt" not in json.dumps(payload)
+
+    usage_events = [data for event_type, data in events if event_type == "llm_usage"]
+    assert usage_events == [
+        {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "total_tokens": 15,
+            "cache_read_tokens": 4,
+            "cache_write_tokens": 3,
+            "iter": 1,
+            "provider": "vip_server",
+            "model": "stub-model",
+            "metering_eligible": True,
+        },
+        {
+            "input_tokens": 20,
+            "output_tokens": 4,
+            "total_tokens": 24,
+            "cache_read_tokens": 7,
+            "iter": 2,
+            "provider": "vip_server",
+            "model": "stub-model",
+            "metering_eligible": True,
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("usage", "expected"),
+    [
+        ({"input_tokens": 1, "input_token_details": {"cache_read": 2}}, {"cache_read_tokens": 2}),
+        ({"input_tokens": 1, "input_token_details": {"cached": 2}}, {"cache_read_tokens": 2}),
+        ({"input_tokens": 1, "prompt_tokens_details": {"cached_tokens": 2}}, {"cache_read_tokens": 2}),
+        ({"input_tokens": 1, "cache_read_input_tokens": 2}, {"cache_read_tokens": 2}),
+        ({"input_tokens": 1, "cache_read_tokens": 2}, {"cache_read_tokens": 2}),
+        ({"input_tokens": 1, "input_token_details": {"cache_creation": 2}}, {"cache_write_tokens": 2}),
+        ({"input_tokens": 1, "cache_creation_input_tokens": 2}, {"cache_write_tokens": 2}),
+        ({"input_tokens": 1, "cache_creation_tokens": 2}, {"cache_write_tokens": 2}),
+        ({"input_tokens": 1, "cache_write_tokens": 2}, {"cache_write_tokens": 2}),
+        ({"input_tokens": 1, "input_token_details": {"cache_read": 0}}, {"cache_read_tokens": 0}),
+        ({"input_tokens": 1}, {}),
+        ({"input_tokens": 1, "input_token_details": {"cache_read": -2}}, {"cache_read_tokens": 0}),
+        ({"input_tokens": 1, "input_token_details": {"cache_read": "not-a-number"}}, {}),
+        ({"input_tokens": 1, "input_token_details": {"cache_read": {"value": 2}}}, {}),
+    ],
+)
+def test_normalize_llm_usage_reads_only_whitelisted_cache_aliases(
+    usage: dict[str, Any], expected: dict[str, int]
+) -> None:
+    """Cache fields are optional and only accepted through known provider paths."""
+    normalized = _normalize_llm_usage(usage)
+
+    assert normalized is not None
+    assert {key: normalized[key] for key in expected} == expected
+    assert set(normalized) == {"input_tokens", "output_tokens", "total_tokens", *expected}
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {"cache_read_tokens": 3},
+        {"cache_write_tokens": 3},
+        {"input_token_details": {"cache_read": "not-a-number"}},
+    ],
+)
+def test_normalize_llm_usage_does_not_create_event_from_cache_only_metadata(usage: dict[str, Any]) -> None:
+    assert _normalize_llm_usage(usage) is None
 
 
 class _StubLLMAlwaysToolCalls:
