@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import inspect
 import json
+import threading
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 import api_server
-from src.api import state
+from src.api import llm_usage_routes, state
 from src.session.models import Attempt, Session
 
 
@@ -33,11 +34,19 @@ def _remote_client() -> TestClient:
     return TestClient(api_server.app, client=("203.0.113.10", 50000))
 
 
-def _local_client() -> TestClient:
+def _local_client(*, raise_server_exceptions: bool = True) -> TestClient:
     """Return a TestClient that simulates a loopback caller."""
     if not _TEST_CLIENT_SUPPORTS_CLIENT:
-        return TestClient(api_server.app, headers={"X-Test-Client-Host": "127.0.0.1"})
-    return TestClient(api_server.app, client=("127.0.0.1", 50000))
+        return TestClient(
+            api_server.app,
+            headers={"X-Test-Client-Host": "127.0.0.1"},
+            raise_server_exceptions=raise_server_exceptions,
+        )
+    return TestClient(
+        api_server.app,
+        client=("127.0.0.1", 50000),
+        raise_server_exceptions=raise_server_exceptions,
+    )
 
 
 def _usage(total_tokens: int) -> dict[str, object]:
@@ -162,6 +171,79 @@ def test_search_and_pagination_only_change_session_page(usage_data: None) -> Non
     assert all_rows["sessions"]["total_items"] == 2
 
 
+def test_usage_offloads_file_aggregation_from_request_thread(
+    usage_data: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_thread_ids: list[int] = []
+    aggregate_thread_ids: list[int] = []
+    original_get_session_service = api_server._get_session_service
+    original_aggregate = llm_usage_routes.LLMUsageAggregationService.aggregate
+
+    def tracked_get_session_service():
+        request_thread_ids.append(threading.get_ident())
+        return original_get_session_service()
+
+    def tracked_aggregate(self, **kwargs):
+        aggregate_thread_ids.append(threading.get_ident())
+        return original_aggregate(self, **kwargs)
+
+    monkeypatch.setattr(api_server, "_get_session_service", tracked_get_session_service)
+    monkeypatch.setattr(llm_usage_routes.LLMUsageAggregationService, "aggregate", tracked_aggregate)
+
+    response = _local_client().get("/usage/llm")
+
+    assert response.status_code == 200
+    assert len(request_thread_ids) == 1
+    assert len(aggregate_thread_ids) == 1
+    assert aggregate_thread_ids[0] != request_thread_ids[0]
+
+
+def test_usage_returns_501_when_session_runtime_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(api_server, "_get_session_service", lambda: None)
+
+    response = _local_client().get("/usage/llm")
+
+    assert response.status_code == 501
+    assert response.json() == {"detail": "Session runtime not enabled"}
+
+
+def test_usage_normalizes_offset_period_boundaries_to_utc(usage_data: None) -> None:
+    response = _local_client().get(
+        "/usage/llm",
+        params={
+            "start_at": "2026-07-01T18:00:00+08:00",
+            "end_at": "2026-07-02T18:00:00+08:00",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["period"] == {
+        "start_at": "2026-07-01T10:00:00Z",
+        "end_at": "2026-07-02T10:00:00Z",
+    }
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"timezone": "../UTC"},
+        {"timezone": "/etc/passwd"},
+        {"start_at": "9999-12-31T23:59:59-23:59"},
+        {"end_at": "0001-01-01T00:00:00+23:59"},
+    ],
+)
+def test_usage_converts_timezone_and_datetime_library_errors_to_400(
+    usage_data: None,
+    params: dict[str, object],
+) -> None:
+    response = _local_client(raise_server_exceptions=False).get("/usage/llm", params=params)
+
+    assert response.status_code == 400
+
+
 @pytest.mark.parametrize(
     "params",
     [
@@ -169,6 +251,7 @@ def test_search_and_pagination_only_change_session_page(usage_data: None) -> Non
         {"start_at": "not-a-date"},
         {"start_at": "2026-07-01T00:00:00"},
         {"start_at": "2026-07-02T00:00:00Z", "end_at": "2026-07-02T00:00:00Z"},
+        {"start_at": "2026-07-03T00:00:00Z", "end_at": "2026-07-02T00:00:00Z"},
         {"page": 0},
         {"page_size": 101},
         {"timezone": ""},

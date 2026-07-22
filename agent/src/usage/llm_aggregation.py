@@ -18,16 +18,28 @@ from src.session.store import SessionStore
 from src.usage.models import (
     DailyBucket,
     LLMUsageAggregateTotals,
+    LLMUsageAggregateResponse,
+    LLMUsagePublicTotals,
     ModelBucket,
     Period,
     RunRow,
     SessionPage,
     SessionRow,
-    LLMUsageAggregateResponse,
 )
 
 
 _POSITIVE_INT = TypeAdapter(PositiveInt, config=ConfigDict(strict=True))
+
+
+def _public_usage_totals(totals: LLMUsageTotals) -> LLMUsagePublicTotals:
+    return LLMUsagePublicTotals(
+        input_tokens=totals.input_tokens,
+        output_tokens=totals.output_tokens,
+        total_tokens=totals.total_tokens,
+        calls=totals.calls,
+        cache_read_tokens=totals.cache_read_tokens,
+        cache_write_tokens=totals.cache_write_tokens,
+    )
 
 
 def _safe_run_id(value: str) -> str | None:
@@ -103,8 +115,8 @@ class _TotalsAccumulator:
             self.cache_write_tokens += totals.cache_write_tokens
             self.cache_write_reported_runs += 1
 
-    def usage_totals(self) -> LLMUsageTotals:
-        return LLMUsageTotals(
+    def public_totals(self) -> LLMUsagePublicTotals:
+        return LLMUsagePublicTotals(
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
             total_tokens=self.total_tokens,
@@ -190,7 +202,7 @@ class LLMUsageAggregationService:
                     provider=summary.provider,
                     model=summary.model,
                     metering_eligible=summary.metering_eligible,
-                    totals=summary.totals,
+                    totals=_public_usage_totals(summary.totals),
                 )
             )
             local_date = occurred_at.astimezone(local_timezone).date()
@@ -206,11 +218,11 @@ class LLMUsageAggregationService:
         offset = (page - 1) * page_size
 
         trend = [
-            DailyBucket(date=day, totals=totals.usage_totals())
+            DailyBucket(date=day, totals=totals.public_totals())
             for day, totals in sorted(daily_totals.items())
         ]
         models = [
-            ModelBucket(provider=provider, model=model, totals=totals.usage_totals())
+            ModelBucket(provider=provider, model=model, totals=totals.public_totals())
             for (provider, model), totals in model_totals.items()
         ]
         models.sort(key=lambda item: (item.provider, item.model or ""))
@@ -347,7 +359,7 @@ class LLMUsageAggregationService:
                     session_id=session.session_id,
                     title=session.title,
                     last_run_at=session_run_rows[0].occurred_at,
-                    totals=totals[session.session_id].usage_totals(),
+                    totals=totals[session.session_id].public_totals(),
                     runs=session_run_rows,
                 )
             )

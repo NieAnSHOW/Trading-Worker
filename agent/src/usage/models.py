@@ -7,9 +7,6 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, PositiveInt, model_serializer
 
-from src.api.models import LLMUsageTotals
-
-
 class _AggregateModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -36,31 +33,40 @@ class LLMUsageAggregateTotals(_AggregateModel):
 AggregateTotals = LLMUsageAggregateTotals
 
 
+class LLMUsagePublicTotals(_AggregateModel):
+    input_tokens: NonNegativeInt
+    output_tokens: NonNegativeInt
+    total_tokens: NonNegativeInt
+    calls: NonNegativeInt
+    cache_read_tokens: Optional[NonNegativeInt] = None
+    cache_write_tokens: Optional[NonNegativeInt] = None
+
+
 class RunRow(_AggregateModel):
     run_id: str = Field(min_length=1)
     occurred_at: datetime
     provider: str = Field(min_length=1)
     model: Optional[str] = None
     metering_eligible: Optional[bool] = None
-    totals: LLMUsageTotals
+    totals: LLMUsagePublicTotals
 
 
 class DailyBucket(_AggregateModel):
     date: date
-    totals: LLMUsageTotals
+    totals: LLMUsagePublicTotals
 
 
 class ModelBucket(_AggregateModel):
     provider: str = Field(min_length=1)
     model: Optional[str] = None
-    totals: LLMUsageTotals
+    totals: LLMUsagePublicTotals
 
 
 class SessionRow(_AggregateModel):
     session_id: str = Field(min_length=1)
     title: str
     last_run_at: datetime
-    totals: LLMUsageTotals
+    totals: LLMUsagePublicTotals
     runs: list[RunRow]
 
 

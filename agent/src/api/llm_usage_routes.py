@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -21,18 +22,18 @@ def _parse_iso8601(value: str | None, name: str) -> datetime | None:
         return None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
+        if parsed.tzinfo is None:
+            raise HTTPException(status_code=400, detail=f"{name} must include a timezone offset")
+        return parsed.astimezone(timezone.utc)
+    except (ValueError, OverflowError) as exc:
         raise HTTPException(status_code=400, detail=f"invalid {name}") from exc
-    if parsed.tzinfo is None:
-        raise HTTPException(status_code=400, detail=f"{name} must include a timezone offset")
-    return parsed.astimezone(timezone.utc)
 
 
 def _validate_timezone(timezone_name: str) -> None:
     """Reject unknown IANA timezone names before aggregation work begins."""
     try:
         ZoneInfo(timezone_name)
-    except ZoneInfoNotFoundError as exc:
+    except (ValueError, ZoneInfoNotFoundError) as exc:
         raise HTTPException(status_code=400, detail="invalid timezone") from exc
 
 
@@ -93,7 +94,9 @@ def register_llm_usage_routes(app: FastAPI, require_auth: AuthDep | None = None)
         service = _host_get_session_service()
         if service is None:
             raise HTTPException(status_code=501, detail="Session runtime not enabled")
-        return LLMUsageAggregationService(service.store, service.runs_dir).aggregate(
+        aggregation_service = LLMUsageAggregationService(service.store, service.runs_dir)
+        return await asyncio.to_thread(
+            aggregation_service.aggregate,
             start_at=parsed_start,
             end_at=parsed_end,
             timezone_name=timezone,

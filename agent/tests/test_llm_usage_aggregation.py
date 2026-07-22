@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from src.api.models import LLMUsageTotals
 from src.session.models import Attempt, Message, Session
 from src.session.store import SessionStore
 from src.usage.llm_aggregation import LLMUsageAggregationService
@@ -150,6 +151,73 @@ def test_public_aggregate_response_serializes_only_global_usage_contract() -> No
     assert "models" not in body
 
 
+@pytest.mark.parametrize(
+    "totals_path",
+    [
+        ("trend", 0, "totals"),
+        ("breakdown", 0, "totals"),
+        ("sessions", "items", 0, "totals"),
+        ("sessions", "items", 0, "runs", 0, "totals"),
+    ],
+)
+def test_public_aggregate_response_rejects_extra_fields_in_nested_totals(
+    totals_path: tuple[str | int, ...],
+) -> None:
+    usage_totals = {
+        "input_tokens": 8,
+        "output_tokens": 2,
+        "total_tokens": 10,
+        "calls": 1,
+    }
+    payload = {
+        "generated_at": datetime(2026, 7, 3, tzinfo=timezone.utc),
+        "timezone": "UTC",
+        "period": {"start_at": None, "end_at": None},
+        "totals": {
+            **usage_totals,
+            "runs": 1,
+            "sessions": 1,
+            "missing_usage_runs": 0,
+            "invalid_usage_runs": 0,
+        },
+        "trend": [{"date": datetime(2026, 7, 1).date(), "totals": dict(usage_totals)}],
+        "breakdown": [
+            {"provider": "openai", "model": "gpt-test", "totals": dict(usage_totals)}
+        ],
+        "sessions": {
+            "items": [
+                {
+                    "session_id": "session-1",
+                    "title": "Session 1",
+                    "last_run_at": datetime(2026, 7, 1, tzinfo=timezone.utc),
+                    "totals": dict(usage_totals),
+                    "runs": [
+                        {
+                            "run_id": "run-1",
+                            "occurred_at": datetime(2026, 7, 1, tzinfo=timezone.utc),
+                            "provider": "openai",
+                            "model": "gpt-test",
+                            "metering_eligible": True,
+                            "totals": dict(usage_totals),
+                        }
+                    ],
+                }
+            ],
+            "page": 1,
+            "page_size": 25,
+            "total_items": 1,
+            "total_pages": 1,
+        },
+    }
+    nested = payload
+    for key in totals_path:
+        nested = nested[key]
+    nested["unexpected"] = "must-be-rejected"
+
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        LLMUsageAggregateResponse.model_validate(payload)
+
+
 @pytest.fixture
 def store(tmp_path: Path) -> SessionStore:
     return SessionStore(tmp_path / "sessions")
@@ -230,6 +298,13 @@ def test_aggregate_links_attempt_and_message_once_and_excludes_orphan(
     assert result.generated_at.tzinfo == timezone.utc
     assert result.totals.cache_read_tokens == 3
     assert result.totals.cache_read_reported_runs == 1
+    nested_totals = [
+        result.trend[0].totals,
+        result.breakdown[0].totals,
+        result.sessions.items[0].totals,
+        result.sessions.items[0].runs[0].totals,
+    ]
+    assert all(type(totals) is not LLMUsageTotals for totals in nested_totals)
     run_ids = {run.run_id for row in result.sessions.items for run in row.runs}
     assert run_ids == {"run-a", "run-b"}
     assert "orphan" not in run_ids
