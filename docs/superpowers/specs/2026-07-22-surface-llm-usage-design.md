@@ -64,7 +64,7 @@ interface LLMUsageSummary {
 
 新增 `GET /usage/llm`，使用以下查询参数：
 
-- `start_at`、`end_at`：可选 ISO 8601 边界；全部历史时省略。前端的近 7 天、近 30 天、本月和自定义时间最终都转换为这两个参数。
+- `start_at`、`end_at`：可选 ISO 8601 带时区边界，采用 `[start_at, end_at)` 半开区间；全部历史时省略。前端的近 7 天、近 30 天、本月和自定义时间最终都转换为这两个参数，自定义结束日转换为次日当地 `00:00:00`。
 - `timezone`：浏览器的 IANA 时区，例如 `Asia/Shanghai`；无效值返回 400，前端无法取得浏览器时区时使用 `UTC`。
 - `query`：可选会话标题或 ID 搜索，只影响会话明细，不影响总览、趋势和分布。
 - `page`、`page_size`：会话明细分页参数；总览仍覆盖完整时间范围。
@@ -114,7 +114,7 @@ interface LLMUsageAggregateResponse {
 2. 对历史关联不完整的会话，从助手消息 `metadata.run_id` 补充运行 ID。
 3. 在单个会话内按 run ID 去重；若同一 run ID 异常出现在多个会话，以 attempt 关联优先并只计入一次。
 4. 读取对应 `llm_usage.json` 并用现有严格 `LLMUsageSummary` 模型校验。
-5. 运行时间优先使用 attempt 的 `created_at`，缺失时使用运行 ID 中的时间，再退回运行目录修改时间。
+5. 运行时间优先使用 attempt 的 `created_at`；消息 fallback 使用对应助手消息的 `created_at`；两者都不可用时退回受约束运行目录的修改时间。运行 ID 中的本地无时区时间不参与日期筛选。
 
 无法关联到任何会话的孤立运行不属于“所有会话”，不会进入聚合结果。实现封装为独立聚合服务，使未来在历史规模明显增长时可替换为索引，而不改变 API 或页面。
 
@@ -161,7 +161,7 @@ interface LLMUsageDelta {
 - `null` 摘要显示“该运行未收到供应商报告的用量”。
 - 组件不接受或渲染原始 usage、提示词、响应、用户 ID、API Key 或登录 token。
 
-文案加入 `en.json` 和 `zh-CN.json` 的既有命名空间。数字使用现有格式化惯例，布局在窄屏时从多列折为单列，避免随内容改变卡片尺寸。
+文案加入现有五个 locale（`en`、`zh-CN`、`ja`、`ko`、`ar`）的既有命名空间。数字使用现有格式化惯例，布局在窄屏时从多列折为单列，避免随内容改变卡片尺寸。
 
 ### 顶层用量中心
 
