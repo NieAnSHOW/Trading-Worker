@@ -163,7 +163,10 @@ class LLMUsageAggregationService:
             if normalized_end is not None and occurred_at >= normalized_end:
                 continue
 
-            artifact = run_dir / "llm_usage.json"
+            artifact = self._usage_artifact(run_dir)
+            if artifact is None:
+                invalid_usage_runs += 1
+                continue
             try:
                 summary = LLMUsageSummary.model_validate_json(
                     artifact.read_text(encoding="utf-8")
@@ -300,6 +303,17 @@ class LLMUsageAggregationService:
         except (OSError, RuntimeError, ValueError):
             return None
         return candidate
+
+    def _usage_artifact(self, run_dir: Path) -> Path | None:
+        artifact = run_dir / "llm_usage.json"
+        try:
+            if artifact.is_symlink():
+                return None
+            resolved_artifact = artifact.resolve(strict=False)
+            resolved_artifact.relative_to(self.runs_dir.resolve(strict=False))
+        except (OSError, RuntimeError, ValueError):
+            return None
+        return resolved_artifact
 
     @staticmethod
     def _occurred_at(ref: _RunRef, run_dir: Path) -> datetime | None:

@@ -340,6 +340,40 @@ def test_unsafe_refs_and_persisted_attempt_paths_cannot_escape_runs_dir(
     assert result.models == []
 
 
+def test_artifact_symlink_cannot_escape_runs_dir(
+    store: SessionStore,
+    tmp_path: Path,
+) -> None:
+    runs_dir = tmp_path / "runs"
+    outside_artifact = tmp_path / "outside-usage.json"
+    outside_artifact.write_text(
+        json.dumps(usage("outside-provider", "outside-model", 999)),
+        encoding="utf-8",
+    )
+    run_dir = runs_dir / "symlinked-artifact"
+    run_dir.mkdir(parents=True)
+    (run_dir / "llm_usage.json").symlink_to(outside_artifact)
+    _create_session(store, "session-symlink")
+    _add_attempt(store, "session-symlink", run_dir, "2026-07-01T00:00:00Z")
+    _write_usage(runs_dir, "valid-sibling", usage("valid-provider", "valid-model", 10))
+    _add_attempt(
+        store,
+        "session-symlink",
+        runs_dir / "valid-sibling",
+        "2026-07-01T01:00:00Z",
+    )
+
+    result = LLMUsageAggregationService(store, runs_dir).aggregate(timezone_name="UTC")
+
+    assert result.totals.total_tokens == 10
+    assert result.totals.runs == 1
+    assert result.totals.invalid_usage_runs == 1
+    assert [
+        (bucket.provider, bucket.model, bucket.totals.total_tokens)
+        for bucket in result.models
+    ] == [("valid-provider", "valid-model", 10)]
+
+
 def test_query_only_filters_session_page_and_does_not_recompute_aggregates(
     store: SessionStore,
     tmp_path: Path,
