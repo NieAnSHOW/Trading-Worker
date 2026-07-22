@@ -224,6 +224,8 @@ export function Agent() {
   const sseSessionRef = useRef<string | null>(null);
   const prevSseStatusRef = useRef<string>("disconnected");
   const genRef = useRef(0);
+  const activeAttemptRef = useRef<string | null>(null);
+  const attemptGenerationRef = useRef(0);
   const pendingGoalSessionRef = useRef<string | null>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const lastEventRef = useRef(0);
@@ -450,22 +452,47 @@ export function Agent() {
     return loadSessionMessages(sid, gen);
   }, [loadSessionMessages]);
 
+  const activateAttempt = useCallback((sid: string, attemptId: string): boolean => {
+    if (!attemptId || act().sessionId !== sid) return false;
+    if (activeAttemptRef.current !== attemptId) {
+      activeAttemptRef.current = attemptId;
+      attemptGenerationRef.current += 1;
+    }
+    return true;
+  }, []);
+
+  const isCurrentAttempt = useCallback((
+    sid: string,
+    attemptId: string,
+    sessionGeneration: number,
+    attemptGeneration: number,
+  ): boolean => (
+    act().sessionId === sid &&
+    genRef.current === sessionGeneration &&
+    activeAttemptRef.current === attemptId &&
+    attemptGenerationRef.current === attemptGeneration
+  ), []);
+
   const syncCompletedAttempt = useCallback(async (sid: string, attemptId?: string) => {
     if (!attemptId) return false;
+    const sessionGeneration = genRef.current;
+    const attemptGeneration = attemptGenerationRef.current;
+    if (!isCurrentAttempt(sid, attemptId, sessionGeneration, attemptGeneration)) return false;
     for (let i = 0; i < 3; i += 1) {
       try {
         const storedMessages = await api.getSessionMessages(sid);
+        if (!isCurrentAttempt(sid, attemptId, sessionGeneration, attemptGeneration)) return false;
         const completedMessage = storedMessages.find(
           (message) => message.role === "assistant" && message.linked_attempt_id === attemptId,
         );
         if (completedMessage) {
-          if (act().sessionId !== sid) return true;
           setReasoningActive(false);
           act().clearStreaming();
           act().setStatus("idle");
           useAgentStore.setState({ toolCalls: [] });
           const persistedUsageRunIds = await refreshSessionMessages(sid);
-          if (act().sessionId !== sid) return true;
+          const refreshedSessionGeneration = genRef.current;
+          if (!isCurrentAttempt(sid, attemptId, refreshedSessionGeneration, attemptGeneration)) return true;
           const metadata = completedMessage.metadata as Record<string, unknown> | undefined;
           const runId = typeof metadata?.run_id === "string" ? metadata.run_id : undefined;
           if (!runId || persistedUsageRunIds.has(runId)) {
@@ -477,9 +504,10 @@ export function Agent() {
         return false;
       }
       await new Promise<void>((resolve) => window.setTimeout(resolve, 800));
+      if (!isCurrentAttempt(sid, attemptId, sessionGeneration, attemptGeneration)) return false;
     }
     return false;
-  }, [refreshSessionMessages]);
+  }, [isCurrentAttempt, refreshSessionMessages]);
 
   const setupSSE = useCallback((sid: string) => {
     if (sseSessionRef.current === sid) return;
@@ -589,7 +617,9 @@ export function Agent() {
         scrollToBottom();
       },
 
-      "attempt.created": () => {
+      "attempt.created": (d) => {
+        const attemptId = typeof d.attempt_id === "string" ? d.attempt_id : "";
+        if (!activateAttempt(sid, attemptId)) return;
         setLiveLlmUsage(null);
         touch();
         // Backend has created a new attempt — ensure streaming state is active
@@ -605,6 +635,10 @@ export function Agent() {
       },
 
       "attempt.completed": async (d) => {
+        const attemptId = typeof d.attempt_id === "string" ? d.attempt_id : "";
+        const sessionGeneration = genRef.current;
+        const attemptGeneration = attemptGenerationRef.current;
+        if (!isCurrentAttempt(sid, attemptId, sessionGeneration, attemptGeneration)) return;
         touch();
         setReasoningActive(false);
         const s = act();
@@ -653,6 +687,7 @@ export function Agent() {
           } catch {
             showCard = true; // fetch failed → show link as fallback
           }
+          if (!isCurrentAttempt(sid, attemptId, sessionGeneration, attemptGeneration)) return;
           if (showCard || shadowId) {
             if (showCard && runMetrics) {
               try { track("feature_use", {}, { name: "backtest_run" }); } catch {}
@@ -679,10 +714,15 @@ export function Agent() {
         // Reset
         s.setStatus("idle");
         useAgentStore.setState({ toolCalls: [] });
+        activeAttemptRef.current = null;
         scrollToBottom();
       },
 
       "attempt.failed": (d) => {
+        const attemptId = typeof d.attempt_id === "string" ? d.attempt_id : "";
+        const sessionGeneration = genRef.current;
+        const attemptGeneration = attemptGenerationRef.current;
+        if (!isCurrentAttempt(sid, attemptId, sessionGeneration, attemptGeneration)) return;
         touch();
         setReasoningActive(false);
         setLiveLlmUsage(null);
@@ -692,6 +732,7 @@ export function Agent() {
         // Clear stale toolCalls so the next turn's running indicator doesn't
         // briefly show the previous turn's progress before fresh events land.
         useAgentStore.setState({ toolCalls: [] });
+        activeAttemptRef.current = null;
         scrollToBottom();
       },
 
@@ -796,7 +837,7 @@ export function Agent() {
       heartbeat: () => {},
       reconnect: (d) => { act().setSseStatus("reconnecting", Number(d.attempt ?? 0)); },
     });
-  }, [connect, disconnect, loadGoalSnapshot, scrollToBottom]);
+  }, [activateAttempt, connect, disconnect, isCurrentAttempt, loadGoalSnapshot, scrollToBottom]);
 
   useEffect(() => {
     const { sessionId: curSid, messages: curMsgs, cacheSession, reset, getCachedSession, switchSession } = act();
@@ -804,6 +845,8 @@ export function Agent() {
     if (urlSessionId && urlSessionId !== curSid) {
       const gen = genRef.current + 1;
       genRef.current = gen;
+      activeAttemptRef.current = null;
+      attemptGenerationRef.current += 1;
       doDisconnect();
       // Live-channel timeline items are per-session; clear on switch.
       setLiveItems([]);
@@ -839,6 +882,8 @@ export function Agent() {
       setupSSE(urlSessionId);
     } else if (!urlSessionId && curSid) {
       genRef.current += 1;
+      activeAttemptRef.current = null;
+      attemptGenerationRef.current += 1;
       doDisconnect();
       setLiveItems([]);
       setLiveLlmUsage(null);
@@ -942,6 +987,7 @@ export function Agent() {
         forceScrollToBottom();
         setupSSE(sid);
         const sent = await api.sendMessage(sid, kickoff);
+        if (!activateAttempt(sid, sent.attempt_id)) return;
         void syncCompletedAttempt(sid, sent.attempt_id);
         try { track("feature_use", {}, { name: "chat_send" }); } catch {}
       } catch (error) {
@@ -979,6 +1025,7 @@ export function Agent() {
       }
       setupSSE(sid);
       const sent = await api.sendMessage(sid, finalPrompt);
+      if (!activateAttempt(sid, sent.attempt_id)) return;
       void syncCompletedAttempt(sid, sent.attempt_id);
       try { track("feature_use", {}, { name: "chat_send" }); } catch {}
     } catch (error) {
@@ -1092,6 +1139,7 @@ export function Agent() {
     try {
       setupSSE(sessionId);
       const sent = await api.sendMessage(sessionId, prompt);
+      if (!activateAttempt(sessionId, sent.attempt_id)) return;
       void syncCompletedAttempt(sessionId, sent.attempt_id);
     } catch (error) {
       act().setStatus("error");
@@ -1099,7 +1147,7 @@ export function Agent() {
       toast.error(message);
       act().addMessage({ id: "", type: "error", content: message, timestamp: Date.now() });
     }
-  }, [forceScrollToBottom, goalSnapshot, sessionId, setupSSE, status, syncCompletedAttempt]);
+  }, [activateAttempt, forceScrollToBottom, goalSnapshot, sessionId, setupSSE, status, syncCompletedAttempt]);
 
   const handleRetry = useCallback((errorMsg: AgentMessage) => {
     if (status === "streaming") return;

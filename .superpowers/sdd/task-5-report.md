@@ -114,3 +114,85 @@ Result: `10 passed in 0.08s`.
 - `agent/src/news/pipeline.py`
 - `agent/tests/news/test_pipeline.py`
 - `.superpowers/sdd/task-5-report.md`
+
+---
+
+## LLM Usage Integration Addendum
+
+### Status
+
+Implemented live and persisted LLM usage integration for the Agent stream, session history, and Run Detail overview.
+
+### TDD Evidence
+
+- RED attempt: added `dispatches llm usage events to the dedicated handler` to `frontend/src/hooks/__tests__/useSSE.test.ts` and ran the focused hook suite first.
+- Result: the new test passed immediately (18 tests passed). This is not a valid RED observation because `useSSE` already subscribed to `llm_usage` before this task; the test records and protects the existing event channel.
+- GREEN: wired the page-level live summary to `parseLLMUsageDelta` and `accumulateLLMUsage`, then reran the required regression suite successfully.
+
+### Verification
+
+- `cd frontend && npx vitest run src/hooks/__tests__/useSSE.test.ts` — 18 passed.
+- `cd frontend && npx vitest run src/hooks/__tests__/useSSE.test.ts src/lib/__tests__/llmUsage.test.ts src/components/chat/__tests__/LLMUsagePanel.test.tsx src/components/chat/__tests__/MessageBubble.test.tsx src/i18n/__tests__/locales.test.ts` — 52 passed across 5 files.
+- `cd frontend && npm run build` — passed (`tsc -b` and Vite production build).
+
+### Risk Signals
+
+- Cross-module: Agent consumes shared `llmUsage` parsing, API `RunData.llm_usage`, and chat panel behavior; no shared module was modified.
+- SSE: LLM usage is parsed and reduced only into component-local summary state. Raw event data is not added to Zustand, chat content, or exports. Existing Last-Event-ID deduplication test remains in place.
+- Public state: persisted chat messages contain only the typed `llmUsage` summary returned by `getRun`; history and completion fetch failure do not add a persisted-usage message.
+
+### Limitations
+
+- No Agent/Run Detail integration test exists within this task's permitted test-file ownership, so live rendering and API-failure retention are verified by code path review plus production type/build checks rather than a new page-level test.
+- When completion's `getRun` request fails, the live summary remains visible until a subsequent `attempt.created` or an attempt failure clears it, so the UI does not imply persistence that was not confirmed.
+
+### Independent Review Follow-up
+
+- The first independent review identified two P2 lifecycle gaps: a missed terminal SSE recovery could retain live usage after persisted history loaded, and session changes could carry live usage into another session.
+- The recovery path now clears live usage only when the completed attempt's run was successfully loaded with persisted usage; failed run reads retain it. Both session-switch and session-removal branches clear it unconditionally.
+- The required regression suite and production build were rerun after this repair.
+- A follow-up review found and the implementation closes an await-time session-switch race: `syncCompletedAttempt` rechecks the current session after history refresh before clearing component-local live usage.
+
+---
+
+## Attempt Completion Race Repair
+
+### Status
+
+Complete.
+
+### TDD Evidence
+
+RED command, before the attempt identity guard:
+
+```sh
+cd frontend && npx vitest run src/pages/__tests__/Agent.attempt-completion.test.tsx
+```
+
+Result: `1 failed`. The deferred `getRun` request for attempt A resumed after
+attempt B had accumulated live usage, and the old callback removed the live
+usage panel.
+
+GREEN command:
+
+```sh
+cd frontend && npx vitest run src/pages/__tests__/Agent.attempt-completion.test.tsx
+```
+
+Result: `2 passed` (success and rejection completion-fetch paths).
+
+### Change
+
+- Track the active attempt id plus attempt and session generations.
+- Revalidate session id, attempt id, and both generations after asynchronous
+  completion/history reads before writing component or Zustand state.
+- Invalidate the active attempt on session changes and replace it on a new
+  `attempt.created` event.
+- Preserve live usage when `getRun` fails; a successful persisted usage read
+  clears the live summary only for the still-current attempt.
+
+### Verification
+
+- `cd frontend && npx vitest run src/pages/__tests__/Agent.attempt-completion.test.tsx src/hooks/__tests__/useSSE.test.ts src/lib/__tests__/llmUsage.test.ts src/components/chat/__tests__/LLMUsagePanel.test.tsx src/components/chat/__tests__/MessageBubble.test.tsx src/i18n/__tests__/locales.test.ts` - 54 passed.
+- `cd frontend && npx vitest run --coverage src/pages/__tests__/Agent.attempt-completion.test.tsx` - 2 passed.
+- `cd frontend && npm run build` - passed.
