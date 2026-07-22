@@ -24,6 +24,7 @@ class LLMUsageAggregateTotals(_AggregateModel):
     total_tokens: NonNegativeInt = 0
     calls: NonNegativeInt = 0
     runs: NonNegativeInt = 0
+    sessions: NonNegativeInt = 0
     missing_usage_runs: NonNegativeInt = 0
     invalid_usage_runs: NonNegativeInt = 0
     cache_read_tokens: Optional[NonNegativeInt] = None
@@ -74,12 +75,23 @@ class SessionPage(_AggregateModel):
 class Period(_AggregateModel):
     start_at: Optional[datetime] = None
     end_at: Optional[datetime] = None
+
+    @model_serializer(mode="wrap")
+    def _serialize_period_boundaries(self, handler):
+        """Keep both explicit range boundaries, including unset null values."""
+        return handler(self)
+
+
+class LLMUsageAggregateResponse(_AggregateModel):
+    generated_at: datetime
     timezone: str = Field(min_length=1)
-
-
-class AggregateResponse(_AggregateModel):
     period: Period
     totals: LLMUsageAggregateTotals
     trend: list[DailyBucket]
-    models: list[ModelBucket]
+    breakdown: list[ModelBucket]
     sessions: SessionPage
+
+    @property
+    def models(self) -> list[ModelBucket]:
+        """Read-only breakdown accessor for in-process callers; never serialized."""
+        return self.breakdown

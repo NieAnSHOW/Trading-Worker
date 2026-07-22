@@ -285,6 +285,10 @@ from src.api.sessions_routes import (  # noqa: F401, E402
     _mandate_proposal_frame_from_tool_result,
 )
 
+# --- Global LLM usage ---
+from src.api.llm_usage_routes import register_llm_usage_routes  # noqa: E402
+register_llm_usage_routes(app)
+
 # --- System ---
 from src.api.system_routes import register_system_routes  # noqa: E402
 register_system_routes(app)

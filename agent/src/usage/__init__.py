@@ -1,6 +1,6 @@
 """LLM usage aggregation services and response models."""
 
 from .llm_aggregation import LLMUsageAggregationService
-from .models import AggregateResponse
+from .models import LLMUsageAggregateResponse
 
-__all__ = ["AggregateResponse", "LLMUsageAggregationService"]
+__all__ = ["LLMUsageAggregateResponse", "LLMUsageAggregationService"]

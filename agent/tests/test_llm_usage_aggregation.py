@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from src.session.models import Attempt, Message, Session
 from src.session.store import SessionStore
 from src.usage.llm_aggregation import LLMUsageAggregationService
+from src.usage.models import LLMUsageAggregateResponse
 
 
 def usage(
@@ -107,6 +108,48 @@ def _add_run_message(
     )
 
 
+def test_public_aggregate_response_serializes_only_global_usage_contract() -> None:
+    response = LLMUsageAggregateResponse.model_validate(
+        {
+            "generated_at": datetime(2026, 7, 3, tzinfo=timezone.utc),
+            "timezone": "UTC",
+            "period": {"start_at": None, "end_at": None},
+            "totals": {
+                "input_tokens": 8,
+                "output_tokens": 2,
+                "total_tokens": 10,
+                "calls": 1,
+                "runs": 1,
+                "sessions": 1,
+                "missing_usage_runs": 0,
+                "invalid_usage_runs": 0,
+            },
+            "trend": [],
+            "breakdown": [],
+            "sessions": {
+                "items": [],
+                "page": 1,
+                "page_size": 25,
+                "total_items": 0,
+                "total_pages": 0,
+            },
+        }
+    )
+
+    body = response.model_dump(mode="json")
+    assert set(body) == {
+        "generated_at",
+        "timezone",
+        "period",
+        "totals",
+        "trend",
+        "breakdown",
+        "sessions",
+    }
+    assert set(body["period"]) == {"start_at", "end_at"}
+    assert "models" not in body
+
+
 @pytest.fixture
 def store(tmp_path: Path) -> SessionStore:
     return SessionStore(tmp_path / "sessions")
@@ -181,8 +224,10 @@ def test_aggregate_links_attempt_and_message_once_and_excludes_orphan(
 
     assert result.totals.total_tokens == 30
     assert result.totals.runs == 2
+    assert result.totals.sessions == 2
     assert result.totals.missing_usage_runs == 1
     assert result.totals.invalid_usage_runs == 1
+    assert result.generated_at.tzinfo == timezone.utc
     assert result.totals.cache_read_tokens == 3
     assert result.totals.cache_read_reported_runs == 1
     run_ids = {run.run_id for row in result.sessions.items for run in row.runs}

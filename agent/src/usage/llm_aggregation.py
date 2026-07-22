@@ -16,7 +16,6 @@ from src.api.models import LLMUsageSummary, LLMUsageTotals
 from src.session.models import Attempt, Message, Session
 from src.session.store import SessionStore
 from src.usage.models import (
-    AggregateResponse,
     DailyBucket,
     LLMUsageAggregateTotals,
     ModelBucket,
@@ -24,6 +23,7 @@ from src.usage.models import (
     RunRow,
     SessionPage,
     SessionRow,
+    LLMUsageAggregateResponse,
 )
 
 
@@ -134,7 +134,7 @@ class LLMUsageAggregationService:
         query: str | None = None,
         page: int = 1,
         page_size: int = 50,
-    ) -> AggregateResponse:
+    ) -> LLMUsageAggregateResponse:
         page = _POSITIVE_INT.validate_python(page)
         page_size = _POSITIVE_INT.validate_python(page_size)
         local_timezone = ZoneInfo(timezone_name)
@@ -216,11 +216,12 @@ class LLMUsageAggregationService:
         models.sort(key=lambda item: (item.provider, item.model or ""))
         models.sort(key=lambda item: item.totals.total_tokens, reverse=True)
 
-        return AggregateResponse(
+        return LLMUsageAggregateResponse(
+            generated_at=datetime.now(timezone.utc),
+            timezone=timezone_name,
             period=Period(
                 start_at=normalized_start,
                 end_at=normalized_end,
-                timezone=timezone_name,
             ),
             totals=LLMUsageAggregateTotals(
                 input_tokens=aggregate.input_tokens,
@@ -228,6 +229,7 @@ class LLMUsageAggregationService:
                 total_tokens=aggregate.total_tokens,
                 calls=aggregate.calls,
                 runs=sum(len(items) for items in session_runs.values()),
+                sessions=len(session_runs),
                 missing_usage_runs=missing_usage_runs,
                 invalid_usage_runs=invalid_usage_runs,
                 cache_read_tokens=(
@@ -244,7 +246,7 @@ class LLMUsageAggregationService:
                 cache_write_reported_runs=aggregate.cache_write_reported_runs,
             ),
             trend=trend,
-            models=models,
+            breakdown=models,
             sessions=SessionPage(
                 items=filtered_rows[offset : offset + page_size],
                 page=page,
