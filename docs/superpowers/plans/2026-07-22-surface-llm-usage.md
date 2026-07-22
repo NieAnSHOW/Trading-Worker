@@ -493,29 +493,31 @@ export interface LLMUsageDelta extends Omit<LLMUsageIteration, "iter"> {
 - Consumes: 已完成的后端安全摘要与前端展示。
 - Produces: 可复现的测试、构建和人工验收证据；不产生新产品代码。
 
-- [ ] **Step 1: 运行后端定向回归**
+- [x] **Step 1: 运行后端定向回归**
 
   Run: `pytest agent/tests/test_agent_loop_terminal_state.py agent/tests/test_run_card.py -q`
 
   Expected: PASS；产物、SSE 和运行详情均覆盖新字段，历史摘要保持可读。
 
-- [ ] **Step 2: 运行前端相关测试和完整生产构建**
+- [x] **Step 2: 运行前端相关测试和完整生产构建**
 
   Run: `cd frontend && npx vitest run src/hooks/__tests__/useSSE.test.ts src/lib/__tests__/llmUsage.test.ts src/components/chat/__tests__/LLMUsagePanel.test.tsx src/components/chat/__tests__/MessageBubble.test.tsx src/i18n/__tests__/locales.test.ts && npm run build`
 
   Expected: 所有 Vitest 用例 PASS，随后 `tsc -b && vite build` 成功完成且没有未使用变量、类型错误或 locale JSON 解析错误。
 
-- [ ] **Step 3: 做本地人工验收，验证实时和历史的一致性**
+- [x] **Step 3: 做本地人工验收，验证实时和历史的一致性**
+
+  <!-- 2026-07-22: 用户授权跳过。仓库没有可安全调用的无凭据测试 Provider；以聚焦单元测试、页面竞态测试、生产构建和敏感信息负向检查作为替代验证证据。 -->
 
   使用一个返回 usage 的非生产/测试 Provider 运行一次会话，确认流式区域在每个 `llm_usage` SSE 后累计 calls、input、output、total 与显式缓存；完成后刷新会话并打开 `/runs/<runId>`。三个位置（实时面板、会话历史、Run Detail）必须与该运行的 `llm_usage.json` totals 一致。再检查一个无 usage 或旧产物运行，确认显示“未收到 Provider 报告的用量”或“缓存用量未提供”，而非 `0`。
 
-- [ ] **Step 4: 做敏感信息负向检查**
+- [x] **Step 4: 做敏感信息负向检查**
 
   Run: `rg -n 'api_key|login_token|authorization|secret-prompt|model response' runs/*/llm_usage.json frontend/src/lib/llmUsage.ts frontend/src/components/chat/LLMUsagePanel.tsx 2>/dev/null || true`
 
   Expected: 实际运行产物和新前端数据/组件代码中没有任何凭据、登录 token、提示词、响应或账户标识。若 `runs/` 下不存在测试运行，记录该前提并以 Task 1 的序列化单元测试作为证据；不得为检查而使用真实凭据。
 
-- [ ] **Step 5: 提交验证完成的全部变更并记录范围边界**
+- [x] **Step 5: 提交验证完成的全部变更并记录范围边界**
 
   ```bash
   git status --short
