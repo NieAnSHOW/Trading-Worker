@@ -232,9 +232,19 @@ def test_api_run_response_can_filter_chart_symbol(tmp_path: Path) -> None:
 def test_api_run_response_includes_llm_usage(tmp_path: Path) -> None:
     import api_server
 
+    sensitive_sentinels = {
+        "api_key": "sentinel-api-key",
+        "login_token": "sentinel-login-token",
+        "prompt": "sentinel-prompt",
+        "response": "sentinel-response",
+    }
     enhanced_dir = tmp_path / "run_enhanced"
     enhanced_dir.mkdir()
     (enhanced_dir / "state.json").write_text('{"status": "success"}\n', encoding="utf-8")
+    (enhanced_dir / "req.json").write_text(
+        json.dumps({"context": sensitive_sentinels}),
+        encoding="utf-8",
+    )
     enhanced = {
         "provider": "vip_server",
         "model": "hosted-model",
@@ -271,18 +281,14 @@ def test_api_run_response_includes_llm_usage(tmp_path: Path) -> None:
 
     response = api_server._build_response_from_run_dir(enhanced_dir, elapsed=0.0)
     legacy_response = api_server._build_response_from_run_dir(legacy_dir, elapsed=0.0)
-
-    sensitive_sentinels = {
-        "api_key": "sentinel-api-key",
-        "login_token": "sentinel-login-token",
-        "prompt": "sentinel-prompt",
-        "response": "sentinel-response",
-    }
+    response_payload = response.model_dump(mode="json")
+    legacy_payload = legacy_response.model_dump(mode="json")
 
     assert response.llm_usage == enhanced
     assert legacy_response.llm_usage == legacy
-    assert not set(response.llm_usage or {}).intersection(sensitive_sentinels)
-    assert not set(legacy_response.llm_usage or {}).intersection(sensitive_sentinels)
+    assert response_payload["llm_usage"] == enhanced
+    assert legacy_payload["llm_usage"] == legacy
+    assert not set(response_payload["llm_usage"] or {}).intersection(sensitive_sentinels)
 
 
 def test_runner_artifact_spec_surfaces_run_card_paths() -> None:
