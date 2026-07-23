@@ -2,6 +2,8 @@
 comet_change: surface-llm-usage
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-07-23-surface-llm-usage
+status: final
 ---
 
 # 全局 LLM 用量中心设计

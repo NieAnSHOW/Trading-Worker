@@ -1,6 +1,6 @@
 workflow: full
 language: zh-CN
-phase: build
+phase: archive
 context_compression: off
 build_mode: subagent-driven-development
 build_pause: null
@@ -13,12 +13,12 @@ auto_transition: true
 base_ref: 6cdaecff5e18cef07f6c999f9a8cdb2d876a65ba
 design_doc: docs/superpowers/specs/2026-07-22-surface-llm-usage-design.md
 plan: docs/superpowers/plans/2026-07-23-global-llm-usage-center.md
-verify_result: fail
+verify_result: pass
 verification_report: docs/superpowers/reports/2026-07-22-surface-llm-usage-verify.md
-branch_status: pending
+branch_status: handled
 created_at: 2026-07-22
-verified_at: null
-archived: false
+verified_at: 2026-07-23
+archived: true
 direct_override: null
 handoff_context: openspec/changes/surface-llm-usage/.comet/handoff/design-context.json
 handoff_hash: 52a3314c8ad9398d4a4998e7a1a62f0ff642fc8ea520bef500a974bac69c1a8e
