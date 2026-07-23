@@ -276,6 +276,60 @@ describe("Usage", () => {
     expect(screen.getByText("1,000")).toBeInTheDocument();
   });
 
+  it("custom-failure-plus-search-edit rolls back only the failed custom draft", async () => {
+    let rejectCustom!: (reason?: unknown) => void;
+    const pendingCustom = new Promise<typeof usageResponse>((_resolve, reject) => { rejectCustom = reject; });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderUsage();
+    await screen.findByText("1,000");
+
+    await user.click(screen.getByRole("button", { name: "自定义" }));
+    const startDate = screen.getByLabelText("开始日期");
+    const endDate = screen.getByLabelText("结束日期");
+    await user.type(startDate, "2026-07-01");
+    await user.type(endDate, "2026-07-02");
+    await user.click(screen.getByRole("button", { name: "应用" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "自定义" })).toHaveAttribute("aria-pressed", "true"));
+
+    getLLMUsage.mockImplementationOnce(() => pendingCustom);
+    await user.clear(startDate);
+    await user.type(startDate, "2026-07-03");
+    await user.clear(endDate);
+    await user.type(endDate, "2026-07-04");
+    await user.click(screen.getByRole("button", { name: "应用" }));
+    await user.type(screen.getByRole("searchbox", { name: "搜索会话" }), "保留搜索草稿");
+    await act(async () => rejectCustom(new Error("custom failed")));
+
+    expect(await screen.findByText("custom failed")).toBeInTheDocument();
+    expect(startDate).toHaveValue("2026-07-01");
+    expect(endDate).toHaveValue("2026-07-02");
+    expect(screen.getByRole("searchbox", { name: "搜索会话" })).toHaveValue("保留搜索草稿");
+    expect(screen.getByText("1,000")).toBeInTheDocument();
+  });
+
+  it("search-failure-plus-custom-edit rolls back only the failed search draft", async () => {
+    let rejectSearch!: (reason?: unknown) => void;
+    const pendingSearch = new Promise<typeof usageResponse>((_resolve, reject) => { rejectSearch = reject; });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderUsage();
+    await screen.findByText("1,000");
+
+    getLLMUsage.mockImplementationOnce(() => pendingSearch);
+    const search = screen.getByRole("searchbox", { name: "搜索会话" });
+    await user.type(search, "失败搜索");
+    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "自定义" }));
+    await user.type(screen.getByLabelText("开始日期"), "2026-07-03");
+    await user.type(screen.getByLabelText("结束日期"), "2026-07-04");
+    await act(async () => rejectSearch(new Error("search failed")));
+
+    expect(await screen.findByText("search failed")).toBeInTheDocument();
+    expect(search).toHaveValue("");
+    expect(screen.getByLabelText("开始日期")).toHaveValue("2026-07-03");
+    expect(screen.getByLabelText("结束日期")).toHaveValue("2026-07-04");
+    expect(screen.getByText("1,000")).toBeInTheDocument();
+  });
+
   it("keeps pagination on the snapshot page when a replacement page fails", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderUsage();

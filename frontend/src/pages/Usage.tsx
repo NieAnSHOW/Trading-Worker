@@ -172,7 +172,8 @@ export function Usage() {
   const [chartDark, setChartDark] = useState(dark);
   const initialLoadStartedRef = useRef(false);
   const requestGenerationRef = useRef(0);
-  const draftGenerationRef = useRef(0);
+  const queryDraftGenerationRef = useRef(0);
+  const rangeDraftGenerationRef = useRef(0);
   const requestedStateRef = useRef<RequestState>({
     range: "all",
     query: "",
@@ -218,7 +219,8 @@ export function Usage() {
 
   const loadUsage = async (preserveSnapshot: boolean, overrides: LoadOverrides = {}) => {
     const requestGeneration = ++requestGenerationRef.current;
-    const draftGeneration = draftGenerationRef.current;
+    const queryDraftGeneration = queryDraftGenerationRef.current;
+    const rangeDraftGeneration = rangeDraftGenerationRef.current;
     const previousRequestedState = requestedStateRef.current;
     const requestState: RequestState = {
       range: overrides.range ?? previousRequestedState.range,
@@ -241,9 +243,11 @@ export function Usage() {
         customEnd: requestState.customEnd,
       });
       requestedStateRef.current = { ...requestState, page: next.sessions.page };
-      if (draftGeneration === draftGenerationRef.current) {
-        if (overrides.range !== undefined) setRangeDraft(requestState.range);
-        if (overrides.query !== undefined) setQueryDraft(requestState.query);
+      if (rangeDraftGeneration === rangeDraftGenerationRef.current && overrides.range !== undefined) {
+        setRangeDraft(requestState.range);
+      }
+      if (queryDraftGeneration === queryDraftGenerationRef.current && overrides.query !== undefined) {
+        setQueryDraft(requestState.query);
       }
       if (overrides.range !== undefined || overrides.query !== undefined || overrides.page !== undefined) {
         setExpandedSessionId(null);
@@ -256,7 +260,7 @@ export function Usage() {
         ...appliedState,
         page: snapshot?.sessions.page ?? 1,
       };
-      if (draftGeneration === draftGenerationRef.current) {
+      if (rangeDraftGeneration === rangeDraftGenerationRef.current) {
         if (
           requestState.range !== appliedState.range
           || requestState.customStart !== appliedState.customStart
@@ -266,6 +270,8 @@ export function Usage() {
           setCustomStart(appliedState.customStart);
           setCustomEnd(appliedState.customEnd);
         }
+      }
+      if (queryDraftGeneration === queryDraftGenerationRef.current) {
         if (requestState.query !== appliedState.query) setQueryDraft(appliedState.query);
       }
       if (!preserveSnapshot) setSnapshot(null);
@@ -283,7 +289,7 @@ export function Usage() {
   }, []);
 
   const selectRange = (nextRange: Range) => {
-    draftGenerationRef.current += 1;
+    rangeDraftGenerationRef.current += 1;
     setRangeDraft(nextRange);
     if (nextRange === "custom") {
       return;
@@ -361,7 +367,7 @@ export function Usage() {
                 type="date"
                 value={customStart}
                 onChange={(event) => {
-                  draftGenerationRef.current += 1;
+                  rangeDraftGenerationRef.current += 1;
                   setCustomStart(event.target.value);
                 }}
                 className="h-9 min-w-0 rounded-md border border-border bg-background px-2 text-sm text-foreground"
@@ -373,7 +379,7 @@ export function Usage() {
                 type="date"
                 value={customEnd}
                 onChange={(event) => {
-                  draftGenerationRef.current += 1;
+                  rangeDraftGenerationRef.current += 1;
                   setCustomEnd(event.target.value);
                 }}
                 className="h-9 min-w-0 rounded-md border border-border bg-background px-2 text-sm text-foreground"
@@ -460,7 +466,7 @@ export function Usage() {
                   placeholder={t("usageCenter.searchSessions")}
                   value={queryDraft}
                   onChange={(event) => {
-                    draftGenerationRef.current += 1;
+                    queryDraftGenerationRef.current += 1;
                     setQueryDraft(event.target.value);
                   }}
                   className="h-9 min-w-0 flex-1 bg-transparent px-3 text-sm outline-none"
