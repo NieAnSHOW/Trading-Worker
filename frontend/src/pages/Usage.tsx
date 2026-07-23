@@ -133,8 +133,11 @@ function BreakdownChart({ data, label, dark }: { data: LLMUsageModelBucket[]; la
       },
       series: [{
         type: "bar",
-        data: sorted.map((bucket) => bucket.totals.total_tokens),
-        itemStyle: { color: theme.warningColor, borderRadius: [0, 3, 3, 0] },
+        data: sorted.map((bucket, index) => ({
+          value: bucket.totals.total_tokens,
+          itemStyle: { color: theme.maColors[index % theme.maColors.length] },
+        })),
+        itemStyle: { borderRadius: [0, 3, 3, 0] },
         barMaxWidth: 22,
       }],
     });

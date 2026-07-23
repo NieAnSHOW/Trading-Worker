@@ -489,7 +489,12 @@ describe("Usage", () => {
     }));
     expect(setOption).toHaveBeenCalledWith(expect.objectContaining({
       yAxis: expect.objectContaining({ data: ["openai / gpt-5", "anthropic / claude"] }),
-      series: [expect.objectContaining({ data: [600, 400] })],
+      series: [expect.objectContaining({
+        data: [
+          { value: 600, itemStyle: { color: "#f59e0b" } },
+          { value: 400, itemStyle: { color: "#8b5cf6" } },
+        ],
+      })],
     }));
 
     unmount();

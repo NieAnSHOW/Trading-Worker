@@ -597,6 +597,7 @@ export function Agent() {
 
       llm_usage: (_data) => {
         // The protocol remains subscribed for backward compatibility; Agent chat deliberately ignores usage.
+        touch();
       },
 
       "attempt.created": (d) => {

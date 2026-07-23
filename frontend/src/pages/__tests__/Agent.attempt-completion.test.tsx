@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAgentStore } from "@/stores/agent";
 
 const { apiMock, connectMock, disconnectMock, onStatusChangeMock, handlersRef } = vi.hoisted(() => ({
@@ -76,6 +76,41 @@ describe("Agent attempt completion", () => {
     apiMock.getLLMSettings.mockResolvedValue({ sse_timeout_seconds: 90 });
     apiMock.sendMessage.mockResolvedValue({ attempt_id: "attempt-a" });
     apiMock.sseUrl.mockReturnValue("/sessions/session-a/events");
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("treats ignored llm_usage events as watchdog activity", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-07-23T04:00:00Z"));
+    apiMock.getLLMSettings.mockResolvedValue({ sse_timeout_seconds: 20 });
+    renderAgent();
+    await waitFor(() => expect(connectMock).toHaveBeenCalled());
+    await waitFor(() => expect(apiMock.getLLMSettings).toHaveBeenCalled());
+
+    await act(async () => {
+      handlersRef.current["attempt.created"]({ attempt_id: "attempt-a" });
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+      handlersRef.current.llm_usage({
+        iter: 1, provider: "vip_server", model: "hosted", metering_eligible: true,
+        input_tokens: 8, output_tokens: 2, total_tokens: 10,
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+
+    expect(useAgentStore.getState().status).toBe("streaming");
+    expect(useAgentStore.getState().messages.some((message) => message.type === "llm_usage")).toBe(false);
+    expect(screen.queryByLabelText("llmUsage.title")).not.toBeInTheDocument();
+    expect(apiMock.getRun).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_001);
+    });
+    expect(useAgentStore.getState().status).toBe("idle");
   });
 
   it("ignores llm_usage events without a chat message or live card", async () => {
