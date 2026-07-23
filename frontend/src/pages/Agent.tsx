@@ -6,8 +6,7 @@ import { toast } from "sonner";
 import { track } from "@/lib/telemetry";
 import { useAgentStore } from "@/stores/agent";
 import { useSSE } from "@/hooks/useSSE";
-import { ApiError, AUTH_REQUIRED_MESSAGE, api, isAuthRequiredError, type GoalSnapshot, type MandateProposal, type MandateCommitted, type LiveAction, type LiveHalted, type LiveStatus, type LLMUsageSummary } from "@/lib/api";
-import { accumulateLLMUsage, parseLLMUsageDelta, parseLLMUsageSummary } from "@/lib/llmUsage";
+import { ApiError, AUTH_REQUIRED_MESSAGE, api, isAuthRequiredError, type GoalSnapshot, type MandateProposal, type MandateCommitted, type LiveAction, type LiveHalted, type LiveStatus } from "@/lib/api";
 import { isReportWorthyRun } from "@/lib/runReports";
 import type { AgentMessage, ToolCallEntry } from "@/types/agent";
 import { AgentAvatar } from "@/components/chat/AgentAvatar";
@@ -19,7 +18,6 @@ import { ToolProgressIndicator } from "@/components/chat/ToolProgressIndicator";
 import { MandateProposalCard } from "@/components/chat/MandateProposalCard";
 import { RunnerStatus } from "@/components/chat/RunnerStatus";
 import { SwarmStatusCard } from "@/components/chat/SwarmStatusCard";
-import { LLMUsagePanel } from "@/components/chat/LLMUsagePanel";
 import {
   applySwarmEvent,
   buildSwarmStatusFromStarted,
@@ -261,7 +259,6 @@ export function Agent() {
    * items (audit M2: always-available global halt — SPEC Consent §4). */
   const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
   const [reasoningActive, setReasoningActive] = useState(false);
-  const [liveLlmUsage, setLiveLlmUsage] = useState<LLMUsageSummary | null>(null);
   /* The status endpoint is not wired on every backend; a 404/501 hides the panel
    * and removes status from the kill-switch visibility condition. */
   const [liveStatusUnavailable, setLiveStatusUnavailable] = useState(false);
@@ -368,14 +365,13 @@ export function Agent() {
     gen: number,
     expectedAttemptGeneration?: number,
   ) => {
-    const persistedUsageRunIds = new Set<string>();
     const isStale = () => (
       genRef.current !== gen ||
       (expectedAttemptGeneration !== undefined && attemptGenerationRef.current !== expectedAttemptGeneration)
     );
     try {
       const msgs = await api.getSessionMessages(sid);
-      if (isStale()) return persistedUsageRunIds;
+      if (isStale()) return;
       const agentMsgs: AgentMessage[] = [];
       for (const m of msgs) {
         const meta = m.metadata as Record<string, unknown> | undefined;
@@ -389,12 +385,10 @@ export function Agent() {
           if (m.content && m.content !== "Strategy execution completed.") {
             agentMsgs.push({ id: m.message_id + "_ans", type: "answer", content: m.content, timestamp: ts });
           }
-          // Fetch once for the run card and its persisted LLM-usage summary.
-          let runDataFetched = false;
+          // Fetch once for the run card.
           let runData: Awaited<ReturnType<typeof api.getRun>> | undefined;
           try {
             runData = await api.getRun(runId);
-            runDataFetched = true;
           } catch {
             // Preserve the previous run-card fallback when the detail request fails.
           }
@@ -428,30 +422,17 @@ export function Agent() {
               });
             }
           }
-          const persistedUsage = parseLLMUsageSummary(runData?.llm_usage);
-          if (runDataFetched && persistedUsage) {
-            persistedUsageRunIds.add(runId);
-            agentMsgs.push({
-              id: m.message_id + "_llm_usage",
-              type: "llm_usage",
-              content: "",
-              llmUsage: persistedUsage,
-              timestamp: ts + 2,
-            });
-          }
         } else {
           agentMsgs.push({ id: m.message_id, type: "answer", content: m.content, timestamp: ts });
         }
       }
-      if (isStale()) return persistedUsageRunIds;
+      if (isStale()) return;
       act().loadHistory(agentMsgs);
       act().setSessionLoading(false);
       act().cacheSession(sid, agentMsgs);
       setTimeout(() => forceScrollToBottom(), 50);
-      return persistedUsageRunIds;
     } catch {
       act().setSessionLoading(false);
-      return persistedUsageRunIds;
     }
   }, [forceScrollToBottom]);
 
@@ -498,16 +479,11 @@ export function Agent() {
           setReasoningActive(false);
           act().clearStreaming();
           useAgentStore.setState({ toolCalls: [] });
-          const persistedUsageRunIds = await refreshSessionMessages(sid, attemptGeneration);
+          await refreshSessionMessages(sid, attemptGeneration);
           const refreshedSessionGeneration = genRef.current;
           if (!isCurrentAttempt(sid, attemptId, refreshedSessionGeneration, attemptGeneration)) return true;
           activeAttemptRef.current = null;
           act().setStatus("idle");
-          const metadata = completedMessage.metadata as Record<string, unknown> | undefined;
-          const runId = typeof metadata?.run_id === "string" ? metadata.run_id : undefined;
-          if (!runId || persistedUsageRunIds.has(runId)) {
-            setLiveLlmUsage(null);
-          }
           return true;
         }
       } catch {
@@ -619,18 +595,13 @@ export function Agent() {
 
       compact: () => { touch(); },
 
-      llm_usage: (d) => {
-        const delta = parseLLMUsageDelta(d);
-        if (!delta) return;
-        setLiveLlmUsage((current) => accumulateLLMUsage(current, delta));
-        touch();
-        scrollToBottom();
+      llm_usage: (_data) => {
+        // The protocol remains subscribed for backward compatibility; Agent chat deliberately ignores usage.
       },
 
       "attempt.created": (d) => {
         const attemptId = typeof d.attempt_id === "string" ? d.attempt_id : "";
         if (!activateAttempt(sid, attemptId)) return;
-        setLiveLlmUsage(null);
         touch();
         // Backend has created a new attempt — ensure streaming state is active
         // even if we connected mid-stream (SSE replay / page reload).
@@ -685,11 +656,9 @@ export function Agent() {
           let runMetrics: Record<string, number> | undefined;
           let runCurve: Array<{ time: string; equity: number }> | undefined;
           let showCard = false;
-          let runDataFetched = false;
           let runData: Awaited<ReturnType<typeof api.getRun>> | undefined;
           try {
             runData = await api.getRun(runId);
-            runDataFetched = true;
             if (isReportWorthyRun(runData)) {
               runMetrics = runData.metrics;
               runCurve = runData.equity_curve?.map(e => ({ time: e.time, equity: Number(e.equity) }));
@@ -716,16 +685,8 @@ export function Agent() {
               timestamp: Date.now(),
             });
           }
-          const persistedUsage = parseLLMUsageSummary(runData?.llm_usage);
-          if (runDataFetched && persistedUsage) {
-            s.addMessage({ id: "", type: "llm_usage", content: "", llmUsage: persistedUsage, timestamp: Date.now() });
-            setLiveLlmUsage(null);
-          }
         } else if (shadowId) {
           s.addMessage({ id: "", type: "run_complete", content: "", shadowId, timestamp: Date.now() });
-          setLiveLlmUsage(null);
-        } else {
-          setLiveLlmUsage(null);
         }
 
         // Reset
@@ -742,7 +703,6 @@ export function Agent() {
         if (!isCurrentAttempt(sid, attemptId, sessionGeneration, attemptGeneration)) return;
         touch();
         setReasoningActive(false);
-        setLiveLlmUsage(null);
         act().clearStreaming();
         act().addMessage({ id: "", type: "error", content: String(d.error || "Execution failed"), timestamp: Date.now() });
         act().setStatus("idle");
@@ -867,7 +827,6 @@ export function Agent() {
       doDisconnect();
       // Live-channel timeline items are per-session; clear on switch.
       setLiveItems([]);
-      setLiveLlmUsage(null);
       setCommittedMandates({});
       setLiveHalted(null);
       setLiveStatusRefresh((n) => n + 1);
@@ -903,7 +862,6 @@ export function Agent() {
       attemptGenerationRef.current += 1;
       doDisconnect();
       setLiveItems([]);
-      setLiveLlmUsage(null);
       setCommittedMandates({});
       setLiveHalted(null);
       setLiveStatusRefresh((n) => n + 1);
@@ -1353,7 +1311,7 @@ export function Agent() {
           })}
 
           {/* Pre-stream placeholder: visible after Send, before first SSE event */}
-          {status === "streaming" && !reasoningActive && !streamingText && toolCalls.length === 0 && liveLlmUsage === null && !messages.some((m) => m.type === "swarm_status" && m.swarmStatus?.status === "running") && (
+          {status === "streaming" && !reasoningActive && !streamingText && toolCalls.length === 0 && !messages.some((m) => m.type === "swarm_status" && m.swarmStatus?.status === "running") && (
             <div className="flex gap-3">
               <AgentAvatar />
               <div className="flex-1 min-w-0 flex items-center gap-2 text-xs text-muted-foreground pt-1">
@@ -1364,7 +1322,7 @@ export function Agent() {
           )}
 
           {/* Live streaming area: text + tool status */}
-          {(streamingText || reasoningActive || liveLlmUsage !== null || (status === "streaming" && toolCalls.length > 0)) && (
+          {(streamingText || reasoningActive || (status === "streaming" && toolCalls.length > 0)) && (
             <div className="flex gap-3">
               <AgentAvatar />
               <div className="flex-1 min-w-0 space-y-1.5">
@@ -1383,7 +1341,6 @@ export function Agent() {
                 {status === "streaming" && toolCalls.length > 0 && (
                   <ToolProgressIndicator toolCalls={toolCalls} />
                 )}
-                {liveLlmUsage && <LLMUsagePanel usage={liveLlmUsage} compact />}
               </div>
             </div>
           )}

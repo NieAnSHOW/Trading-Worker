@@ -48,13 +48,22 @@ vi.mock("@/components/chat/ToolProgressIndicator", () => ({ ToolProgressIndicato
 vi.mock("@/components/chat/MandateProposalCard", () => ({ MandateProposalCard: () => <div /> }));
 vi.mock("@/components/chat/RunnerStatus", () => ({ RunnerStatus: () => <div /> }));
 vi.mock("@/components/chat/SwarmStatusCard", () => ({ SwarmStatusCard: () => <div /> }));
-vi.mock("@/components/chat/LLMUsagePanel", () => ({
-  LLMUsagePanel: ({ usage }: { usage: { totals: { input_tokens: number } } }) => (
-    <div data-testid="live-usage">{usage.totals.input_tokens}</div>
-  ),
-}));
 
 import { Agent } from "../Agent";
+
+const renderAgent = () => render(
+  <MemoryRouter initialEntries={["/agent?session=session-a"]}>
+    <Routes><Route path="/agent" element={<Agent />} /></Routes>
+  </MemoryRouter>,
+);
+
+const llmUsage = {
+  provider: "vip_server",
+  model: "hosted",
+  metering_eligible: true,
+  totals: { input_tokens: 8, output_tokens: 2, total_tokens: 10, calls: 1 },
+  per_iteration: [{ iter: 1, input_tokens: 8, output_tokens: 2, total_tokens: 10 }],
+};
 
 describe("Agent attempt completion", () => {
   beforeEach(() => {
@@ -69,25 +78,53 @@ describe("Agent attempt completion", () => {
     apiMock.sseUrl.mockReturnValue("/sessions/session-a/events");
   });
 
-  it("keeps the current attempt live usage when an earlier completion fetch resolves", async () => {
+  it("ignores llm_usage events without a chat message or live card", async () => {
+    renderAgent();
+    await waitFor(() => expect(connectMock).toHaveBeenCalled());
+
+    await act(async () => {
+      handlersRef.current.llm_usage({
+        iter: 1, provider: "vip_server", model: "hosted", metering_eligible: true,
+        input_tokens: 8, output_tokens: 2, total_tokens: 10,
+      });
+    });
+
+    expect(useAgentStore.getState().messages.some((message) => message.type === "llm_usage")).toBe(false);
+    expect(screen.queryByLabelText("llmUsage.title")).not.toBeInTheDocument();
+    expect(apiMock.getRun).not.toHaveBeenCalled();
+  });
+
+  it("does not restore LLM usage as a historical chat message", async () => {
+    const completedMessage = {
+      message_id: "message-a",
+      role: "assistant",
+      content: "Persisted complete",
+      created_at: "2026-07-22T12:00:00Z",
+      linked_attempt_id: "attempt-a",
+      metadata: { run_id: "run-a" },
+    };
+    apiMock.getSessionMessages.mockResolvedValue([completedMessage]);
+    apiMock.getRun.mockResolvedValue({ metrics: {}, equity_curve: [], artifacts: [], llm_usage: llmUsage });
+
+    renderAgent();
+    await waitFor(() => expect(connectMock).toHaveBeenCalled());
+    fireEvent.change(screen.getByPlaceholderText("agent.placeholder"), { target: { value: "run it" } });
+    fireEvent.keyDown(screen.getByPlaceholderText("agent.placeholder"), { key: "Enter", code: "Enter" });
+
+    await waitFor(() => expect(useAgentStore.getState().messages.some((message) => message.content === "Persisted complete")).toBe(true));
+    expect(useAgentStore.getState().messages.some((message) => message.type === "llm_usage")).toBe(false);
+  });
+
+  it("keeps the current attempt streaming when an earlier completion fetch resolves", async () => {
     let resolveRun!: (run: Record<string, unknown>) => void;
     apiMock.getRun.mockReturnValue(new Promise((resolve) => { resolveRun = resolve; }));
 
-    render(
-      <MemoryRouter initialEntries={["/agent?session=session-a"]}>
-        <Routes><Route path="/agent" element={<Agent />} /></Routes>
-      </MemoryRouter>,
-    );
+    renderAgent();
     await waitFor(() => expect(connectMock).toHaveBeenCalled());
 
     await act(async () => {
       handlersRef.current["attempt.created"]({ attempt_id: "attempt-a" });
-      handlersRef.current.llm_usage({
-        iter: 1, provider: "provider", model: null, metering_eligible: false,
-        input_tokens: 1, output_tokens: 0, total_tokens: 1,
-      });
     });
-    expect(screen.getByTestId("live-usage")).toHaveTextContent("1");
 
     act(() => {
       void handlersRef.current["attempt.completed"]({
@@ -100,38 +137,25 @@ describe("Agent attempt completion", () => {
 
     await act(async () => {
       handlersRef.current["attempt.created"]({ attempt_id: "attempt-b" });
-      handlersRef.current.llm_usage({
-        iter: 2, provider: "provider", model: null, metering_eligible: false,
-        input_tokens: 2, output_tokens: 0, total_tokens: 2,
-      });
     });
-    expect(screen.getByTestId("live-usage")).toHaveTextContent("2");
 
     await act(async () => {
       resolveRun({ metrics: {}, equity_curve: [], artifacts: [], llm_usage: null });
       await Promise.resolve();
     });
 
-    expect(screen.getByTestId("live-usage")).toHaveTextContent("2");
+    expect(useAgentStore.getState().status).toBe("streaming");
   });
 
-  it("keeps the current attempt live usage when an earlier completion fetch fails", async () => {
+  it("keeps the current attempt streaming when an earlier completion fetch fails", async () => {
     let rejectRun!: (error: Error) => void;
     apiMock.getRun.mockReturnValue(new Promise((_resolve, reject) => { rejectRun = reject; }));
 
-    render(
-      <MemoryRouter initialEntries={["/agent?session=session-a"]}>
-        <Routes><Route path="/agent" element={<Agent />} /></Routes>
-      </MemoryRouter>,
-    );
+    renderAgent();
     await waitFor(() => expect(connectMock).toHaveBeenCalled());
 
     await act(async () => {
       handlersRef.current["attempt.created"]({ attempt_id: "attempt-a" });
-      handlersRef.current.llm_usage({
-        iter: 1, provider: "provider", model: null, metering_eligible: false,
-        input_tokens: 1, output_tokens: 0, total_tokens: 1,
-      });
     });
 
     act(() => {
@@ -145,10 +169,6 @@ describe("Agent attempt completion", () => {
 
     await act(async () => {
       handlersRef.current["attempt.created"]({ attempt_id: "attempt-b" });
-      handlersRef.current.llm_usage({
-        iter: 2, provider: "provider", model: null, metering_eligible: false,
-        input_tokens: 2, output_tokens: 0, total_tokens: 2,
-      });
     });
 
     await act(async () => {
@@ -156,7 +176,37 @@ describe("Agent attempt completion", () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByTestId("live-usage")).toHaveTextContent("2");
+    expect(useAgentStore.getState().status).toBe("streaming");
+  });
+
+  it("continues processing tool calls, assistant text, and completion after llm_usage", async () => {
+    apiMock.getRun.mockResolvedValue({ metrics: {}, equity_curve: [], artifacts: [], llm_usage: llmUsage });
+    renderAgent();
+    await waitFor(() => expect(connectMock).toHaveBeenCalled());
+
+    await act(async () => {
+      handlersRef.current["attempt.created"]({ attempt_id: "attempt-a" });
+      handlersRef.current.llm_usage({
+        iter: 1, provider: "vip_server", model: "hosted", metering_eligible: true,
+        input_tokens: 8, output_tokens: 2, total_tokens: 10,
+      });
+      handlersRef.current.tool_call({ tool: "run_backtest", arguments: {} });
+      handlersRef.current.text_delta({ delta: "Assistant response" });
+    });
+
+    expect(useAgentStore.getState().toolCalls).toHaveLength(1);
+    expect(useAgentStore.getState().streamingText).toBe("Assistant response");
+
+    await act(async () => {
+      await handlersRef.current["attempt.completed"]({
+        attempt_id: "attempt-a",
+        run_dir: "/runs/run-a",
+        summary: "Complete",
+      });
+    });
+
+    expect(useAgentStore.getState().messages.some((message) => message.content === "Complete")).toBe(true);
+    expect(useAgentStore.getState().messages.some((message) => message.type === "llm_usage")).toBe(false);
   });
 
   it("applies a terminal attempt exactly once when polling wins the race with SSE", async () => {
