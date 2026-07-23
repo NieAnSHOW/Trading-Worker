@@ -414,7 +414,7 @@ git commit -s -m "feat: add global LLM usage center"
 
 ### Task 4: 移除 Agent 聊天流单次用量
 
-- [ ] 7.2 从 Agent 实时区域和历史消息中移除单次用量卡片及其页面状态，保留 Run Detail 运行级用量，并更新相关回归测试。
+- [x] 7.2 从 Agent 实时区域和历史消息中移除单次用量卡片及其页面状态，保留 Run Detail 运行级用量，并更新相关回归测试。
 
 **Files:**
 
