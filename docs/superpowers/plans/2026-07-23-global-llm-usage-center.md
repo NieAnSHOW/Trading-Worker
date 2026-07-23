@@ -299,7 +299,7 @@ git commit -s -m "feat: expose aggregated LLM usage API"
 
 ### Task 3: 全局用量中心页面
 
-- [ ] 7.1 以 TDD 新增 `/usage` 懒加载页面、侧栏一级入口、聚合 API 类型和国际化界面，实现全部历史/日期筛选、手动刷新、总览、趋势、Provider/模型分布及可展开会话运行明细。
+- [x] 7.1 以 TDD 新增 `/usage` 懒加载页面、侧栏一级入口、聚合 API 类型和国际化界面，实现全部历史/日期筛选、手动刷新、总览、趋势、Provider/模型分布及可展开会话运行明细。
 
 **Files:**
 
