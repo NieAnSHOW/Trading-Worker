@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 import api_server
 from src.api import llm_usage_routes, state
-from src.session.models import Attempt, Session
+from src.session.models import Attempt, Message, Session
 
 
 _TEST_CLIENT_SUPPORTS_CLIENT = "client" in inspect.signature(TestClient).parameters
@@ -53,7 +53,6 @@ def _usage(total_tokens: int) -> dict[str, object]:
     return {
         "provider": "openai",
         "model": "gpt-test",
-        "metering_eligible": True,
         "totals": {
             "input_tokens": total_tokens - 2,
             "output_tokens": 2,
@@ -68,10 +67,10 @@ def _usage(total_tokens: int) -> dict[str, object]:
                 "total_tokens": total_tokens,
             }
         ],
-        "api_key": "never-return",
-        "login_token": "never-return",
-        "prompt": "never-return",
-        "response": "never-return",
+        "api_key": "api-key-sentinel",
+        "login_token": "login-token-sentinel",
+        "prompt": "attempt-prompt-sentinel",
+        "response": "model-response-sentinel",
     }
 
 
@@ -94,7 +93,7 @@ def usage_data() -> None:
 
     for session_id, title, run_id, total_tokens, occurred_at in [
         ("alpha-session", "Alpha research", "run-alpha", 10, "2026-07-01T10:00:00Z"),
-        ("beta-session", "Beta review", "run-beta", 20, "2026-07-02T10:00:00Z"),
+        ("beta-session", "title-sentinel", "run-beta", 20, "2026-07-02T10:00:00Z"),
     ]:
         service.store.create_session(
             Session(
@@ -102,6 +101,7 @@ def usage_data() -> None:
                 title=title,
                 created_at=occurred_at,
                 updated_at=occurred_at,
+                config={"api_key": "api-key-sentinel", "login_token": "login-token-sentinel"},
             )
         )
         service.store.create_attempt(
@@ -109,7 +109,17 @@ def usage_data() -> None:
                 attempt_id=f"attempt-{run_id}",
                 session_id=session_id,
                 run_dir=str(api_server.RUNS_DIR / run_id),
+                prompt="attempt-prompt-sentinel",
                 created_at=occurred_at,
+            )
+        )
+        service.store.append_message(
+            Message(
+                session_id=session_id,
+                role="assistant",
+                content="message-body-sentinel",
+                created_at=occurred_at,
+                metadata={"run_id": run_id},
             )
         )
         run_dir = api_server.RUNS_DIR / run_id
@@ -120,7 +130,7 @@ def usage_data() -> None:
 def test_local_usage_response_has_strict_safe_aggregate_contract(usage_data: None) -> None:
     response = _local_client().get(
         "/usage/llm",
-        params={"timezone": "UTC", "query": "no-match", "page": 1, "page_size": 1},
+        params={"timezone": "UTC", "page": 1, "page_size": 1},
     )
 
     assert response.status_code == 200
@@ -137,8 +147,18 @@ def test_local_usage_response_has_strict_safe_aggregate_contract(usage_data: Non
     assert set(body["period"]) == {"start_at", "end_at"}
     assert body["totals"]["total_tokens"] == 30
     assert body["totals"]["sessions"] == 2
-    assert body["sessions"]["items"] == []
-    assert "never-return" not in response.text
+    for secret in (
+        "api-key-sentinel",
+        "login-token-sentinel",
+        "message-body-sentinel",
+        "attempt-prompt-sentinel",
+        "model-response-sentinel",
+    ):
+        assert secret not in response.text
+    row = body["sessions"]["items"][0]
+    assert row["title"] == "title-sentinel"
+    assert set(row) == {"session_id", "title", "last_run_at", "totals", "runs"}
+    assert set(row["runs"][0]) == {"run_id", "occurred_at", "provider", "model", "totals"}
 
 
 def test_remote_usage_requires_correct_bearer_key(usage_data: None, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -64,6 +64,8 @@ const usageResponse = {
           provider: "openai",
           model: "gpt-5",
           metering_eligible: true,
+          prompt: "attempt-prompt-sentinel",
+          response: "model-response-sentinel",
           totals: { input_tokens: 400, output_tokens: 200, total_tokens: 600, calls: 3 },
         }],
       },
@@ -131,6 +133,8 @@ describe("Usage", () => {
       screen.getByRole("button", { name: /会话 A/i }),
     );
     expect(screen.getByRole("link", { name: /run-a/i })).toHaveAttribute("href", "/runs/run-a");
+    expect(screen.queryByText("attempt-prompt-sentinel")).not.toBeInTheDocument();
+    expect(screen.queryByText("model-response-sentinel")).not.toBeInTheDocument();
   });
 
   it("deduplicates the initial aggregate request under StrictMode", async () => {
