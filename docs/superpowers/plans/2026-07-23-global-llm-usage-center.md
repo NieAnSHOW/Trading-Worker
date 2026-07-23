@@ -218,7 +218,7 @@ git commit -s -m "feat: aggregate LLM usage across sessions"
 
 ### Task 2: 聚合 API 契约与认证
 
-- [ ] 6.2 新增受认证保护的 `GET /usage/llm` 契约与 API 测试，支持会话搜索和分页，确保搜索/分页不改变完整时间范围的总览统计。
+- [x] 6.2 新增受认证保护的 `GET /usage/llm` 契约与 API 测试，支持会话搜索和分页，确保搜索/分页不改变完整时间范围的总览统计。
 
 **Files:**
 
