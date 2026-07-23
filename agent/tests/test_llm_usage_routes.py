@@ -244,6 +244,34 @@ def test_usage_converts_timezone_and_datetime_library_errors_to_400(
     assert response.status_code == 400
 
 
+@pytest.mark.parametrize("timezone_name", ["A" * 256, "A" * 1024, "A" * 5000])
+def test_usage_rejects_overlong_timezone_names_as_bad_requests(
+    usage_data: None,
+    timezone_name: str,
+) -> None:
+    response = _local_client(raise_server_exceptions=False).get(
+        "/usage/llm",
+        params={"timezone": timezone_name},
+    )
+
+    assert response.status_code == 400
+
+
+def test_usage_converts_timezone_os_errors_to_bad_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    def raise_os_error(_: str) -> None:
+        raise OSError("File name too long")
+
+    monkeypatch.setattr(llm_usage_routes, "ZoneInfo", raise_os_error)
+
+    response = _local_client(raise_server_exceptions=False).get(
+        "/usage/llm",
+        params={"timezone": "UTC"},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "invalid timezone"}
+
+
 @pytest.mark.parametrize(
     "params",
     [

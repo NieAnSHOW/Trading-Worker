@@ -14,6 +14,7 @@ from src.usage.models import LLMUsageAggregateResponse
 
 
 AuthDep = Callable[..., Awaitable[Any] | Any]
+_MAX_TIMEZONE_NAME_LENGTH = 255
 
 
 def _parse_iso8601(value: str | None, name: str) -> datetime | None:
@@ -31,9 +32,11 @@ def _parse_iso8601(value: str | None, name: str) -> datetime | None:
 
 def _validate_timezone(timezone_name: str) -> None:
     """Reject unknown IANA timezone names before aggregation work begins."""
+    if len(timezone_name) > _MAX_TIMEZONE_NAME_LENGTH:
+        raise HTTPException(status_code=400, detail="invalid timezone")
     try:
         ZoneInfo(timezone_name)
-    except (ValueError, ZoneInfoNotFoundError) as exc:
+    except (OSError, ValueError, ZoneInfoNotFoundError) as exc:
         raise HTTPException(status_code=400, detail="invalid timezone") from exc
 
 
