@@ -4,6 +4,7 @@ import { Layout } from "@/components/layout/Layout";
 
 
 const Agent = lazy(() => import("@/pages/Agent").then((m) => ({ default: m.Agent })));
+const Usage = lazy(() => import("@/pages/Usage").then((m) => ({ default: m.Usage })));
 const RunDetail = lazy(() =>
   import("@/pages/RunDetail").then((m) => ({ default: m.RunDetail })),
 );
@@ -53,6 +54,7 @@ export const router = createBrowserRouter([
     children: [
       { path: "/", element: wrap(Dashboard) },
       { path: "/agent", element: wrap(Agent) },
+      { path: "/usage", element: wrap(Usage) },
       { path: "/runtime", element: <Navigate to="/settings" replace /> },
       { path: "/reports", element: wrap(Reports) },
       { path: "/settings", element: wrap(Settings) },

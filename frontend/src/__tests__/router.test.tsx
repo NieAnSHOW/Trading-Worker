@@ -13,6 +13,10 @@ vi.mock("@/pages/Dashboard", () => ({
   default: () => <div>Dashboard page</div>,
 }));
 
+vi.mock("@/pages/Usage", () => ({
+  Usage: () => <div>Usage page</div>,
+}));
+
 import { router } from "@/router";
 
 describe("dashboard routes", () => {
@@ -35,5 +39,17 @@ describe("legacy runtime route", () => {
 
     await waitFor(() => expect(router.state.location.pathname).toBe("/settings"));
     expect(screen.getByText("Settings page")).toBeInTheDocument();
+  });
+});
+
+describe("usage route", () => {
+  it("lazy-loads the global usage center", async () => {
+    render(<RouterProvider router={router} />);
+
+    await act(async () => {
+      await router.navigate("/usage");
+    });
+
+    expect(await screen.findByText("Usage page")).toBeInTheDocument();
   });
 });

@@ -440,6 +440,13 @@ export const api = {
   },
   getRunCode: (id: string) => request<Record<string, string>>(`/runs/${id}/code`),
   getRunPine: (id: string) => request<PineScriptResult>(`/runs/${id}/pine`),
+  getLLMUsage: (params: LLMUsageQuery) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== "") query.set(key, String(value));
+    }
+    return request<LLMUsageAggregateResponse>(`/usage/llm?${query.toString()}`);
+  },
   listSessions: () => request<SessionItem[]>("/sessions"),
   createSession: (title?: string) => request<SessionItem>("/sessions", { method: "POST", body: JSON.stringify({ title: title || "" }) }),
   deleteSession: (sid: string) => request<{ status: string }>(`/sessions/${sid}`, { method: "DELETE" }),
@@ -860,6 +867,70 @@ export interface LLMUsageSummary {
   metering_eligible: boolean;
   totals: LLMUsageTotals;
   per_iteration: LLMUsageIteration[];
+}
+
+export type LLMUsageQuery = {
+  timezone: string;
+  start_at?: string;
+  end_at?: string;
+  query?: string;
+  page?: number;
+  page_size?: number;
+};
+
+export interface LLMUsageAggregateTotals extends LLMUsageTotals {
+  runs: number;
+  sessions: number;
+  missing_usage_runs: number;
+  invalid_usage_runs: number;
+  cache_read_reported_runs: number;
+  cache_write_reported_runs: number;
+}
+
+export interface LLMUsageRunRow {
+  run_id: string;
+  occurred_at: string;
+  provider: string;
+  model?: string | null;
+  metering_eligible?: boolean;
+  totals: LLMUsageTotals;
+}
+
+export interface LLMUsageDailyBucket {
+  date: string;
+  totals: LLMUsageTotals;
+}
+
+export interface LLMUsageModelBucket {
+  provider: string;
+  model?: string | null;
+  totals: LLMUsageTotals;
+}
+
+export interface LLMUsageSessionRow {
+  session_id: string;
+  title: string;
+  last_run_at: string;
+  totals: LLMUsageTotals;
+  runs: LLMUsageRunRow[];
+}
+
+export interface LLMUsageSessionPage {
+  items: LLMUsageSessionRow[];
+  page: number;
+  page_size: number;
+  total_items: number;
+  total_pages: number;
+}
+
+export interface LLMUsageAggregateResponse {
+  generated_at: string;
+  timezone: string;
+  period: { start_at: string | null; end_at: string | null };
+  totals: LLMUsageAggregateTotals;
+  trend: LLMUsageDailyBucket[];
+  breakdown: LLMUsageModelBucket[];
+  sessions: LLMUsageSessionPage;
 }
 
 export interface RunData {

@@ -25,6 +25,7 @@ import {
   Search,
   BookOpen,
   LayoutDashboard,
+  ChartNoAxesCombined,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -351,6 +352,13 @@ export function Layout() {
             label={t("layout.agent")}
             collapsed={collapsed}
             isActive={isActive("/agent")}
+          />
+          <NavLink
+            to="/usage"
+            icon={ChartNoAxesCombined}
+            label={t("layout.usage")}
+            collapsed={collapsed}
+            isActive={isActive("/usage")}
           />
           <NavLink
             to="/reports"

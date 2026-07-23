@@ -26,6 +26,7 @@ function renderLayout(initialEntry = "/") {
           <Route path="/" element={<div>Dashboard route content</div>} />
           <Route path="/agent" element={<div>Agent route content</div>} />
           <Route path="/news" element={<div>News route content</div>} />
+          <Route path="/usage" element={<div>Usage route content</div>} />
         </Route>
       </Routes>
     </MemoryRouter>,
@@ -74,6 +75,19 @@ describe("Layout sidebar", () => {
     expect(news).toHaveAttribute("href", "/news");
     expect(news).toHaveClass("bg-primary/10", "text-primary");
     expect(screen.getByText("News route content")).toBeInTheDocument();
+  });
+
+  it("places the usage center beside Agent as an active workspace link", () => {
+    renderLayout("/usage");
+
+    const agent = screen.getByRole("link", { name: "智能体" });
+    const usage = screen.getByRole("link", { name: "LLM 用量" });
+    const reports = screen.getByRole("link", { name: "报告" });
+    expect(usage).toHaveAttribute("href", "/usage");
+    expect(usage).toHaveClass("bg-primary/10", "text-primary");
+    expect(agent.compareDocumentPosition(usage) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(usage.compareDocumentPosition(reports) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText("Usage route content")).toBeInTheDocument();
   });
 
   it("keeps the main area constrained", () => {
