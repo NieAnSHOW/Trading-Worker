@@ -32,14 +32,25 @@ type LoadOverrides = {
   customEnd?: string;
 };
 
+type AppliedState = {
+  range: Range;
+  query: string;
+  customStart: string;
+  customEnd: string;
+};
+
+type RequestState = AppliedState & {
+  page: number;
+};
+
 const PAGE_SIZE = 25;
 
 function localMidnight(value: string): Date {
   return new Date(`${value}T00:00:00`);
 }
 
-function formatNumber(value: number): string {
-  return value.toLocaleString();
+function formatNumber(value: number, locale: string): string {
+  return value.toLocaleString(locale);
 }
 
 function TrendChart({ data, label, dark }: { data: LLMUsageDailyBucket[]; label: string; dark: boolean }) {
@@ -139,23 +150,36 @@ function BreakdownChart({ data, label, dark }: { data: LLMUsageModelBucket[]; la
 }
 
 export function Usage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { dark } = useDarkMode();
+  const locale = i18n.resolvedLanguage || i18n.language;
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const [snapshot, setSnapshot] = useState<LLMUsageAggregateResponse | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [lastSuccessfulAt, setLastSuccessfulAt] = useState<Date | null>(null);
-  const [range, setRange] = useState<Range>("all");
-  const [query, setQuery] = useState("");
+  const [appliedState, setAppliedState] = useState<AppliedState>({
+    range: "all",
+    query: "",
+    customStart: "",
+    customEnd: "",
+  });
+  const [rangeDraft, setRangeDraft] = useState<Range>("all");
   const [queryDraft, setQueryDraft] = useState("");
-  const [page, setPage] = useState(1);
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
   const [chartDark, setChartDark] = useState(dark);
   const initialLoadStartedRef = useRef(false);
   const requestGenerationRef = useRef(0);
+  const draftGenerationRef = useRef(0);
+  const requestedStateRef = useRef<RequestState>({
+    range: "all",
+    query: "",
+    customStart: "",
+    customEnd: "",
+    page: 1,
+  });
 
   useEffect(() => {
     const root = document.documentElement;
@@ -166,23 +190,21 @@ export function Usage() {
     return () => observer.disconnect();
   }, [dark]);
 
-  const buildQuery = (overrides: LoadOverrides = {}): LLMUsageQuery => {
-    const activeRange = overrides.range ?? range;
-    const activePage = overrides.page ?? page;
-    const activeQuery = overrides.query ?? query;
+  const buildQuery = (requestState: RequestState): LLMUsageQuery => {
     const now = new Date();
-    const params: LLMUsageQuery = { timezone, page: activePage, page_size: PAGE_SIZE };
+    const params: LLMUsageQuery = { timezone, page: requestState.page, page_size: PAGE_SIZE };
 
-    if (activeRange === "last7" || activeRange === "last30") {
-      const days = activeRange === "last7" ? 7 : 30;
-      params.start_at = new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
+    if (requestState.range === "last7" || requestState.range === "last30") {
+      const days = requestState.range === "last7" ? 7 : 30;
+      const start = new Date(now);
+      start.setDate(start.getDate() - days);
+      params.start_at = start.toISOString();
       params.end_at = now.toISOString();
-    } else if (activeRange === "month") {
+    } else if (requestState.range === "month") {
       params.start_at = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
       params.end_at = now.toISOString();
-    } else if (activeRange === "custom") {
-      const start = overrides.customStart ?? customStart;
-      const end = overrides.customEnd ?? customEnd;
+    } else if (requestState.range === "custom") {
+      const { customStart: start, customEnd: end } = requestState;
       if (start) params.start_at = localMidnight(start).toISOString();
       if (end) {
         const exclusiveEnd = localMidnight(end);
@@ -190,22 +212,62 @@ export function Usage() {
         params.end_at = exclusiveEnd.toISOString();
       }
     }
-    if (activeQuery.trim()) params.query = activeQuery.trim();
+    if (requestState.query.trim()) params.query = requestState.query.trim();
     return params;
   };
 
   const loadUsage = async (preserveSnapshot: boolean, overrides: LoadOverrides = {}) => {
     const requestGeneration = ++requestGenerationRef.current;
+    const draftGeneration = draftGenerationRef.current;
+    const previousRequestedState = requestedStateRef.current;
+    const requestState: RequestState = {
+      range: overrides.range ?? previousRequestedState.range,
+      query: overrides.query ?? previousRequestedState.query,
+      customStart: overrides.customStart ?? previousRequestedState.customStart,
+      customEnd: overrides.customEnd ?? previousRequestedState.customEnd,
+      page: overrides.page ?? previousRequestedState.page,
+    };
+    requestedStateRef.current = requestState;
     setIsLoading(true);
     setRefreshError(null);
     try {
-      const next = await api.getLLMUsage(buildQuery(overrides));
+      const next = await api.getLLMUsage(buildQuery(requestState));
       if (requestGeneration !== requestGenerationRef.current) return;
       setSnapshot(next);
+      setAppliedState({
+        range: requestState.range,
+        query: requestState.query,
+        customStart: requestState.customStart,
+        customEnd: requestState.customEnd,
+      });
+      requestedStateRef.current = { ...requestState, page: next.sessions.page };
+      if (draftGeneration === draftGenerationRef.current) {
+        if (overrides.range !== undefined) setRangeDraft(requestState.range);
+        if (overrides.query !== undefined) setQueryDraft(requestState.query);
+      }
+      if (overrides.range !== undefined || overrides.query !== undefined || overrides.page !== undefined) {
+        setExpandedSessionId(null);
+      }
       setLastSuccessfulAt(new Date());
     } catch (error) {
       if (requestGeneration !== requestGenerationRef.current) return;
       setRefreshError(error instanceof Error ? error.message : t("usageCenter.loadFailed"));
+      requestedStateRef.current = {
+        ...appliedState,
+        page: snapshot?.sessions.page ?? 1,
+      };
+      if (draftGeneration === draftGenerationRef.current) {
+        if (
+          requestState.range !== appliedState.range
+          || requestState.customStart !== appliedState.customStart
+          || requestState.customEnd !== appliedState.customEnd
+        ) {
+          setRangeDraft(appliedState.range);
+          setCustomStart(appliedState.customStart);
+          setCustomEnd(appliedState.customEnd);
+        }
+        if (requestState.query !== appliedState.query) setQueryDraft(appliedState.query);
+      }
       if (!preserveSnapshot) setSnapshot(null);
     } finally {
       if (requestGeneration === requestGenerationRef.current) setIsLoading(false);
@@ -221,31 +283,26 @@ export function Usage() {
   }, []);
 
   const selectRange = (nextRange: Range) => {
-    setRange(nextRange);
-    setPage(1);
-    setExpandedSessionId(null);
-    if (nextRange !== "custom") void loadUsage(true, { range: nextRange, page: 1 });
+    draftGenerationRef.current += 1;
+    setRangeDraft(nextRange);
+    if (nextRange === "custom") {
+      return;
+    }
+    void loadUsage(true, { range: nextRange, page: 1 });
   };
 
   const submitCustomRange = (event: FormEvent) => {
     event.preventDefault();
-    setPage(1);
-    setExpandedSessionId(null);
     void loadUsage(true, { range: "custom", page: 1, customStart, customEnd });
   };
 
   const submitSearch = (event: FormEvent) => {
     event.preventDefault();
     const nextQuery = queryDraft.trim();
-    setQuery(nextQuery);
-    setPage(1);
-    setExpandedSessionId(null);
     void loadUsage(true, { query: nextQuery, page: 1 });
   };
 
   const changePage = (nextPage: number) => {
-    setPage(nextPage);
-    setExpandedSessionId(null);
     void loadUsage(true, { page: nextPage });
   };
 
@@ -258,7 +315,7 @@ export function Usage() {
           <h1 className="text-xl font-semibold text-foreground sm:text-2xl">{t("usageCenter.title")}</h1>
           {lastSuccessfulAt && (
             <p className="mt-1 text-xs text-muted-foreground">
-              {t("usageCenter.lastUpdated")} {lastSuccessfulAt.toLocaleString()}
+              {t("usageCenter.lastUpdated")} {lastSuccessfulAt.toLocaleString(locale)}
             </p>
           )}
         </div>
@@ -286,24 +343,27 @@ export function Usage() {
               key={value}
               type="button"
               onClick={() => selectRange(value)}
-              aria-pressed={range === value}
+              aria-pressed={appliedState.range === value}
               className={cn(
                 "h-8 rounded-md px-3 text-sm transition-colors",
-                range === value ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:text-foreground",
+                appliedState.range === value ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:text-foreground",
               )}
             >
               {t(key)}
             </button>
           ))}
         </div>
-        {range === "custom" && (
+        {rangeDraft === "custom" && (
           <form onSubmit={submitCustomRange} className="flex flex-col gap-2 sm:flex-row sm:items-end">
             <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
               {t("usageCenter.startDate")}
               <input
                 type="date"
                 value={customStart}
-                onChange={(event) => setCustomStart(event.target.value)}
+                onChange={(event) => {
+                  draftGenerationRef.current += 1;
+                  setCustomStart(event.target.value);
+                }}
                 className="h-9 min-w-0 rounded-md border border-border bg-background px-2 text-sm text-foreground"
               />
             </label>
@@ -312,7 +372,10 @@ export function Usage() {
               <input
                 type="date"
                 value={customEnd}
-                onChange={(event) => setCustomEnd(event.target.value)}
+                onChange={(event) => {
+                  draftGenerationRef.current += 1;
+                  setCustomEnd(event.target.value);
+                }}
                 className="h-9 min-w-0 rounded-md border border-border bg-background px-2 text-sm text-foreground"
               />
             </label>
@@ -347,7 +410,7 @@ export function Usage() {
             <div className="rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-sm text-foreground">
               <p className="font-medium">{t("usageCenter.partialData")}</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                {t("usageCenter.missingUsageRuns")}: {snapshot.totals.missing_usage_runs} · {t("usageCenter.invalidUsageRuns")}: {snapshot.totals.invalid_usage_runs}
+                {t("usageCenter.missingUsageRuns")}: {formatNumber(snapshot.totals.missing_usage_runs, locale)} · {t("usageCenter.invalidUsageRuns")}: {formatNumber(snapshot.totals.invalid_usage_runs, locale)}
               </p>
             </div>
           )}
@@ -359,20 +422,20 @@ export function Usage() {
           )}
 
           <section className="grid grid-cols-[repeat(auto-fit,minmax(9rem,1fr))] gap-2" aria-label={t("usageCenter.totalTokens")}>
-            <div className={metricClass}><p className="text-xs text-muted-foreground">{t("usageCenter.totalTokens")}</p><p className="mt-1 text-xl font-semibold tabular-nums">{formatNumber(snapshot.totals.total_tokens)}</p></div>
-            <div className={metricClass}><p className="text-xs text-muted-foreground">{t("usageCenter.inputTokens")}</p><p className="mt-1 text-xl font-semibold tabular-nums">{formatNumber(snapshot.totals.input_tokens)}</p></div>
-            <div className={metricClass}><p className="text-xs text-muted-foreground">{t("usageCenter.outputTokens")}</p><p className="mt-1 text-xl font-semibold tabular-nums">{formatNumber(snapshot.totals.output_tokens)}</p></div>
-            <div className={metricClass}><p className="text-xs text-muted-foreground">{t("usageCenter.calls")}</p><p className="mt-1 text-xl font-semibold tabular-nums">{formatNumber(snapshot.totals.calls)}</p></div>
-            <div className={metricClass}><p className="text-xs text-muted-foreground">{t("usageCenter.sessions")}</p><p className="mt-1 text-xl font-semibold tabular-nums">{formatNumber(snapshot.totals.sessions)}</p></div>
+            <div className={metricClass}><p className="text-xs text-muted-foreground">{t("usageCenter.totalTokens")}</p><p className="mt-1 text-xl font-semibold tabular-nums">{formatNumber(snapshot.totals.total_tokens, locale)}</p></div>
+            <div className={metricClass}><p className="text-xs text-muted-foreground">{t("usageCenter.inputTokens")}</p><p className="mt-1 text-xl font-semibold tabular-nums">{formatNumber(snapshot.totals.input_tokens, locale)}</p></div>
+            <div className={metricClass}><p className="text-xs text-muted-foreground">{t("usageCenter.outputTokens")}</p><p className="mt-1 text-xl font-semibold tabular-nums">{formatNumber(snapshot.totals.output_tokens, locale)}</p></div>
+            <div className={metricClass}><p className="text-xs text-muted-foreground">{t("usageCenter.calls")}</p><p className="mt-1 text-xl font-semibold tabular-nums">{formatNumber(snapshot.totals.calls, locale)}</p></div>
+            <div className={metricClass}><p className="text-xs text-muted-foreground">{t("usageCenter.sessions")}</p><p className="mt-1 text-xl font-semibold tabular-nums">{formatNumber(snapshot.totals.sessions, locale)}</p></div>
             <div className={metricClass}>
               <p className="text-xs text-muted-foreground">{t("usageCenter.cacheRead")}</p>
-              <p className="mt-1 text-lg font-semibold tabular-nums">{snapshot.totals.cache_read_tokens === undefined ? t("usageCenter.notProvided") : formatNumber(snapshot.totals.cache_read_tokens)}</p>
-              {snapshot.totals.cache_read_tokens !== undefined && <p className="mt-1 text-[11px] text-muted-foreground">{t("usageCenter.cacheCoverage")}: {snapshot.totals.cache_read_reported_runs} / {snapshot.totals.runs}</p>}
+              <p className="mt-1 text-lg font-semibold tabular-nums">{snapshot.totals.cache_read_tokens === undefined ? t("usageCenter.notProvided") : formatNumber(snapshot.totals.cache_read_tokens, locale)}</p>
+              {snapshot.totals.cache_read_tokens !== undefined && <p className="mt-1 text-[11px] text-muted-foreground">{t("usageCenter.cacheCoverage")}: {formatNumber(snapshot.totals.cache_read_reported_runs, locale)} / {formatNumber(snapshot.totals.runs, locale)}</p>}
             </div>
             <div className={metricClass}>
               <p className="text-xs text-muted-foreground">{t("usageCenter.cacheWrite")}</p>
-              <p className="mt-1 text-lg font-semibold tabular-nums">{snapshot.totals.cache_write_tokens === undefined ? t("usageCenter.notProvided") : formatNumber(snapshot.totals.cache_write_tokens)}</p>
-              {snapshot.totals.cache_write_tokens !== undefined && <p className="mt-1 text-[11px] text-muted-foreground">{t("usageCenter.cacheCoverage")}: {snapshot.totals.cache_write_reported_runs} / {snapshot.totals.runs}</p>}
+              <p className="mt-1 text-lg font-semibold tabular-nums">{snapshot.totals.cache_write_tokens === undefined ? t("usageCenter.notProvided") : formatNumber(snapshot.totals.cache_write_tokens, locale)}</p>
+              {snapshot.totals.cache_write_tokens !== undefined && <p className="mt-1 text-[11px] text-muted-foreground">{t("usageCenter.cacheCoverage")}: {formatNumber(snapshot.totals.cache_write_reported_runs, locale)} / {formatNumber(snapshot.totals.runs, locale)}</p>}
             </div>
           </section>
 
@@ -396,7 +459,10 @@ export function Usage() {
                   aria-label={t("usageCenter.searchSessions")}
                   placeholder={t("usageCenter.searchSessions")}
                   value={queryDraft}
-                  onChange={(event) => setQueryDraft(event.target.value)}
+                  onChange={(event) => {
+                    draftGenerationRef.current += 1;
+                    setQueryDraft(event.target.value);
+                  }}
                   className="h-9 min-w-0 flex-1 bg-transparent px-3 text-sm outline-none"
                 />
                 <button type="submit" aria-label={t("usageCenter.searchSessions")} className="grid h-9 w-9 shrink-0 place-items-center text-muted-foreground hover:text-foreground">
@@ -419,11 +485,11 @@ export function Usage() {
                     >
                       <span className="min-w-0">
                         <span className="block truncate text-sm font-medium text-foreground">{session.title || session.session_id}</span>
-                        <span className="mt-0.5 block text-xs text-muted-foreground">{new Date(session.last_run_at).toLocaleString()}</span>
+                        <span className="mt-0.5 block text-xs text-muted-foreground">{new Date(session.last_run_at).toLocaleString(locale)}</span>
                       </span>
                       <span className="flex shrink-0 items-center gap-3 text-xs text-muted-foreground">
-                        <span>{t("usageCenter.runs")}: {session.runs.length}</span>
-                        <span>{formatNumber(session.totals.total_tokens)}</span>
+                        <span>{t("usageCenter.runs")}: {formatNumber(session.runs.length, locale)}</span>
+                        <span>{formatNumber(session.totals.total_tokens, locale)}</span>
                         {expanded ? <ChevronUp className="h-4 w-4" aria-hidden="true" /> : <ChevronDown className="h-4 w-4" aria-hidden="true" />}
                       </span>
                     </button>
@@ -436,8 +502,8 @@ export function Usage() {
                             <Link to={`/runs/${run.run_id}`} className="min-w-0 truncate font-medium text-primary hover:underline">{run.run_id}</Link>
                             <span className="flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
                               <span>{run.provider}{run.model ? ` / ${run.model}` : ""}</span>
-                              <span>{formatNumber(run.totals.total_tokens)}</span>
-                              <span>{new Date(run.occurred_at).toLocaleString()}</span>
+                              <span>{formatNumber(run.totals.total_tokens, locale)}</span>
+                              <span>{new Date(run.occurred_at).toLocaleString(locale)}</span>
                             </span>
                           </div>
                         ))}
@@ -453,21 +519,21 @@ export function Usage() {
                 <button
                   type="button"
                   aria-label={t("usageCenter.previousPage")}
-                  disabled={page <= 1 || isLoading}
-                  onClick={() => changePage(page - 1)}
+                  disabled={snapshot.sessions.page <= 1 || isLoading}
+                  onClick={() => changePage(snapshot.sessions.page - 1)}
                   className="grid h-8 w-8 place-items-center rounded-md border border-border disabled:opacity-40"
                 >
-                  <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+                  <ChevronLeft className="h-4 w-4 rtl:flip-x" aria-hidden="true" />
                 </button>
-                <span className="min-w-14 text-center text-xs tabular-nums text-muted-foreground">{page} / {snapshot.sessions.total_pages}</span>
+                <span className="min-w-14 text-center text-xs tabular-nums text-muted-foreground">{formatNumber(snapshot.sessions.page, locale)} / {formatNumber(snapshot.sessions.total_pages, locale)}</span>
                 <button
                   type="button"
                   aria-label={t("usageCenter.nextPage")}
-                  disabled={page >= snapshot.sessions.total_pages || isLoading}
-                  onClick={() => changePage(page + 1)}
+                  disabled={snapshot.sessions.page >= snapshot.sessions.total_pages || isLoading}
+                  onClick={() => changePage(snapshot.sessions.page + 1)}
                   className="grid h-8 w-8 place-items-center rounded-md border border-border disabled:opacity-40"
                 >
-                  <ChevronRight className="h-4 w-4" aria-hidden="true" />
+                  <ChevronRight className="h-4 w-4 rtl:flip-x" aria-hidden="true" />
                 </button>
               </div>
             )}

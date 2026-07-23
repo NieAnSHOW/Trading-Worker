@@ -84,14 +84,16 @@ const usageResponse = {
 
 const getLLMUsage = vi.mocked(api.getLLMUsage);
 const init = vi.mocked(echarts.init);
+const originalTimeZone = process.env.TZ;
 
 function renderUsage() {
   return render(<MemoryRouter><Usage /></MemoryRouter>);
 }
 
 describe("Usage", () => {
-  beforeEach(() => {
-    i18n.changeLanguage("zh-CN");
+  beforeEach(async () => {
+    process.env.TZ = "Asia/Shanghai";
+    await i18n.changeLanguage("zh-CN");
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date("2026-07-23T04:00:00Z"));
     vi.spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions").mockReturnValue({
@@ -109,6 +111,11 @@ describe("Usage", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  afterAll(() => {
+    if (originalTimeZone === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTimeZone;
   });
 
   it("loads all-time usage once in the browser timezone and expands safe run links", async () => {
@@ -153,6 +160,30 @@ describe("Usage", () => {
     }));
   });
 
+  it.each([
+    ["近 7 天", "2026-03-05T17:00:00.000Z"],
+    ["近 30 天", "2026-02-10T17:00:00.000Z"],
+  ])("subtracts local calendar days for %s across New York DST", async (label, start_at) => {
+    process.env.TZ = "America/New_York";
+    vi.setSystemTime(new Date("2026-03-12T16:00:00.000Z"));
+    vi.mocked(Intl.DateTimeFormat.prototype.resolvedOptions).mockReturnValue({
+      timeZone: "America/New_York",
+    } as Intl.ResolvedDateTimeFormatOptions);
+    renderUsage();
+    await screen.findByText("1,000");
+    getLLMUsage.mockClear();
+
+    await userEvent.setup({ advanceTimers: vi.advanceTimersByTime }).click(screen.getByRole("button", { name: label }));
+
+    await waitFor(() => expect(getLLMUsage).toHaveBeenCalledWith({
+      timezone: "America/New_York",
+      page: 1,
+      page_size: 25,
+      start_at: expect.stringMatching(`^${start_at.slice(0, 19)}`),
+      end_at: expect.stringMatching("^2026-03-12T16:00:00"),
+    }));
+  });
+
   it("uses local calendar midnights and an exclusive next-day custom end", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderUsage();
@@ -187,6 +218,75 @@ describe("Usage", () => {
     getLLMUsage.mockClear();
     await user.click(screen.getByRole("button", { name: "下一页" }));
     await waitFor(() => expect(getLLMUsage).toHaveBeenCalledWith(expect.objectContaining({ query: "会话 A", page: 2 })));
+    expect(screen.getByText("1,000")).toBeInTheDocument();
+  });
+
+  it("keeps the applied range selected when a replacement range fails", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderUsage();
+    await screen.findByText("1,000");
+    getLLMUsage.mockRejectedValueOnce(new Error("range failed"));
+
+    await user.click(screen.getByRole("button", { name: "近 7 天" }));
+
+    expect(await screen.findByText("range failed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "全部历史" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "近 7 天" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText("1,000")).toBeInTheDocument();
+  });
+
+  it("restores applied custom dates when replacement dates fail", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderUsage();
+    await screen.findByText("1,000");
+    await user.click(screen.getByRole("button", { name: "自定义" }));
+    const startDate = screen.getByLabelText("开始日期");
+    const endDate = screen.getByLabelText("结束日期");
+    await user.type(startDate, "2026-07-01");
+    await user.type(endDate, "2026-07-02");
+    await user.click(screen.getByRole("button", { name: "应用" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "自定义" })).toHaveAttribute("aria-pressed", "true"));
+
+    getLLMUsage.mockRejectedValueOnce(new Error("custom failed"));
+    await user.clear(startDate);
+    await user.type(startDate, "2026-07-03");
+    await user.clear(endDate);
+    await user.type(endDate, "2026-07-04");
+    await user.click(screen.getByRole("button", { name: "应用" }));
+
+    expect(await screen.findByText("custom failed")).toBeInTheDocument();
+    expect(startDate).toHaveValue("2026-07-01");
+    expect(endDate).toHaveValue("2026-07-02");
+    expect(screen.getByRole("button", { name: "自定义" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("1,000")).toBeInTheDocument();
+  });
+
+  it("restores the applied search text when a replacement search fails", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderUsage();
+    await screen.findByText("1,000");
+    getLLMUsage.mockRejectedValueOnce(new Error("search failed"));
+    const search = screen.getByRole("searchbox", { name: "搜索会话" });
+
+    await user.type(search, "会话 A");
+    await user.keyboard("{Enter}");
+
+    expect(await screen.findByText("search failed")).toBeInTheDocument();
+    expect(search).toHaveValue("");
+    expect(screen.getByText("1,000")).toBeInTheDocument();
+  });
+
+  it("keeps pagination on the snapshot page when a replacement page fails", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderUsage();
+    await screen.findByText("1,000");
+    getLLMUsage.mockRejectedValueOnce(new Error("page failed"));
+
+    await user.click(screen.getByRole("button", { name: "下一页" }));
+
+    expect(await screen.findByText("page failed")).toBeInTheDocument();
+    expect(screen.getByText("1 / 2")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "上一页" })).toBeDisabled();
     expect(screen.getByText("1,000")).toBeInTheDocument();
   });
 
@@ -225,6 +325,59 @@ describe("Usage", () => {
     await act(async () => resolveOlder({ ...usageResponse, totals: { ...usageResponse.totals, total_tokens: 7000 } }));
     expect(screen.getByText("3,000")).toBeInTheDocument();
     expect(screen.queryByText("7,000")).not.toBeInTheDocument();
+  });
+
+  it("keeps a custom editor opened after an earlier range request succeeds", async () => {
+    let resolveRange!: (value: typeof usageResponse) => void;
+    const pendingRange = new Promise<typeof usageResponse>((resolve) => { resolveRange = resolve; });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderUsage();
+    await screen.findByText("1,000");
+    getLLMUsage.mockImplementationOnce(() => pendingRange);
+
+    await user.click(screen.getByRole("button", { name: "近 7 天" }));
+    await waitFor(() => expect(getLLMUsage).toHaveBeenLastCalledWith(expect.objectContaining({
+      start_at: expect.stringMatching("^2026-07-16T04:00:00"),
+    })));
+    await user.click(screen.getByRole("button", { name: "自定义" }));
+    expect(screen.getByLabelText("开始日期")).toBeInTheDocument();
+
+    await act(async () => resolveRange(structuredClone(usageResponse)));
+    expect(screen.getByRole("button", { name: "近 7 天" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByLabelText("开始日期")).toBeInTheDocument();
+  });
+
+  it("merges a pending search into the latest range request and ignores the older response", async () => {
+    let resolveSearch!: (value: typeof usageResponse) => void;
+    const pendingSearch = new Promise<typeof usageResponse>((resolve) => { resolveSearch = resolve; });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderUsage();
+    await screen.findByText("1,000");
+    getLLMUsage.mockImplementationOnce(() => pendingSearch).mockResolvedValueOnce({
+      ...structuredClone(usageResponse),
+      totals: { ...usageResponse.totals, total_tokens: 7000 },
+    });
+
+    await user.type(screen.getByRole("searchbox", { name: "搜索会话" }), "会话 A");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(getLLMUsage).toHaveBeenLastCalledWith(expect.objectContaining({ query: "会话 A" })));
+    await user.click(screen.getByRole("button", { name: "近 7 天" }));
+
+    await waitFor(() => expect(getLLMUsage).toHaveBeenLastCalledWith(expect.objectContaining({
+      query: "会话 A",
+      page: 1,
+      start_at: expect.stringMatching("^2026-07-16T04:00:00"),
+    })));
+    expect(await screen.findByText("7,000")).toBeInTheDocument();
+    expect(screen.getByRole("searchbox", { name: "搜索会话" })).toHaveValue("会话 A");
+    expect(screen.getByRole("button", { name: "近 7 天" })).toHaveAttribute("aria-pressed", "true");
+
+    await act(async () => resolveSearch({
+      ...structuredClone(usageResponse),
+      totals: { ...usageResponse.totals, total_tokens: 3000 },
+    }));
+    expect(screen.getByText("7,000")).toBeInTheDocument();
+    expect(screen.queryByText("3,000")).not.toBeInTheDocument();
   });
 
   it("retries an initial failure and preserves an existing snapshot after refresh failure", async () => {
@@ -308,5 +461,24 @@ describe("Usage", () => {
     const sessionList = screen.getByRole("region", { name: "会话明细" });
     expect(within(sessionList).getByRole("button", { name: /会话 A/i })).toHaveClass("flex-col", "sm:flex-row");
     expect(container.querySelector(".overflow-x-auto")).not.toBeInTheDocument();
+  });
+
+  it("formats usage numbers and dates with the active i18n locale", async () => {
+    await i18n.changeLanguage("ar");
+    renderUsage();
+
+    expect(await screen.findByText(new Intl.NumberFormat("ar").format(1000))).toBeInTheDocument();
+    expect(screen.getByText(new Date("2026-07-23T03:00:00Z").toLocaleString("ar"))).toBeInTheDocument();
+  });
+
+  it("mirrors pagination chevrons in RTL locales", async () => {
+    await i18n.changeLanguage("ar");
+    renderUsage();
+    await screen.findByText(new Intl.NumberFormat("ar").format(1000));
+
+    const previous = screen.getByRole("button", { name: i18n.t("usageCenter.previousPage") });
+    const next = screen.getByRole("button", { name: i18n.t("usageCenter.nextPage") });
+    expect(previous.querySelector("svg")).toHaveClass("rtl:flip-x");
+    expect(next.querySelector("svg")).toHaveClass("rtl:flip-x");
   });
 });
