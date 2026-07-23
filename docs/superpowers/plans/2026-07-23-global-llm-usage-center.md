@@ -490,7 +490,7 @@ git commit -s -m "refactor: remove LLM usage from agent chat"
 
 ### Task 5: 修订后的完整验证
 
-- [ ] 8.1 运行新增后端与前端定向测试、locale 完整性测试和前端生产构建，并验证聚合端点不暴露凭据、消息正文、运行 prompt 或模型响应。
+- [x] 8.1 运行新增后端与前端定向测试、locale 完整性测试和前端生产构建，并验证聚合端点不暴露凭据、消息正文、运行 prompt 或模型响应。
 
 **Files:**
 
