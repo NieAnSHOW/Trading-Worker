@@ -200,6 +200,14 @@ pub struct CommandMessage {
     pub message: String,
 }
 
+/// 导入桌面服务配置后返回给前端的安全视图。
+/// 不暴露原始 JSON 或本地配置文件路径。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopConfigImportView {
+    pub user_api_url: String,
+}
+
 /// console_auth_status 返回。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -215,6 +223,14 @@ fn unauthenticated_status() -> AuthStatusView {
         user_info: None,
         expire_at: None,
     }
+}
+
+#[tauri::command]
+pub fn console_import_user_api_config(content: String) -> Result<DesktopConfigImportView, String> {
+    let layout = Layout::from_home()?;
+    let user_api_url =
+        crate::desktop_config::import_user_api_config(&layout.desktop_config, &content)?;
+    Ok(DesktopConfigImportView { user_api_url })
 }
 
 fn invalidate_authentication<F>(state: &AuthState, clear_persistence: F) -> Result<(), AuthError>
@@ -1178,8 +1194,7 @@ mod tests {
             }
             upload_finished_sender.send(()).unwrap();
         });
-        let previous_api_url = std::env::var("VIBE_USER_API_URL").ok();
-        std::env::set_var("VIBE_USER_API_URL", api_url);
+        auth::set_user_api_url_for_test(Some(api_url));
 
         let tmp = tempfile::tempdir().unwrap();
         let layout = Layout::new(&tmp.path().join(".vibe-trading"));
@@ -1196,10 +1211,7 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(1))
             .unwrap();
 
-        match previous_api_url {
-            Some(value) => std::env::set_var("VIBE_USER_API_URL", value),
-            None => std::env::remove_var("VIBE_USER_API_URL"),
-        }
+        auth::set_user_api_url_for_test(None);
 
         assert!(result.is_ok());
         assert!(auth_state.0.lock().unwrap().is_some());

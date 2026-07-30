@@ -66,6 +66,10 @@ export interface CommandMessage {
   message: string;
 }
 
+export interface DesktopConfigImportView {
+  userApiUrl: string;
+}
+
 export interface AuthStatusView {
   authenticated: boolean;
   userInfo?: UserInfo | null;

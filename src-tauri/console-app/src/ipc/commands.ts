@@ -3,6 +3,7 @@ import type {
   AuthStatusView,
   Captcha,
   CommandMessage,
+  DesktopConfigImportView,
   LoginResultView,
   MemberUsageView,
   MemberBenefitsView,
@@ -37,6 +38,11 @@ export const consoleClearLogs = (): Promise<number> =>
 
 export const consoleClearVenv = (): Promise<void> =>
   invoke<void>("console_clear_venv");
+
+export const consoleImportUserApiConfig = (
+  content: string,
+): Promise<DesktopConfigImportView> =>
+  invoke<DesktopConfigImportView>("console_import_user_api_config", { content });
 
 export const consoleStartChannels = (port: number): Promise<string> =>
   invoke<string>("console_start_channels", { port });

@@ -8,6 +8,9 @@ mod runtime_dir;
 #[path = "../src/version.rs"]
 mod version;
 
+#[path = "../src/desktop_config.rs"]
+mod desktop_config;
+
 #[path = "../src/auth.rs"]
 mod auth;
 

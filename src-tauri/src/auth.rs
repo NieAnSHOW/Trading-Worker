@@ -19,12 +19,27 @@ use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::runtime_dir::Layout;
 
+const DEFAULT_USER_API_URL: &str = "http://127.0.0.1:8001";
+
 // ── 可覆盖配置 ──
 // 业务接口（captcha/sms/login/person...），独立于大模型 MaaS 接口。
 // 默认值与 frontend/src/pages/auth/Login.tsx 对齐。 https://trading-server.nieanshow.cn
-pub fn user_api_url() -> String {
-    std::env::var("VIBE_USER_API_URL").unwrap_or_else(|_| "http://127.0.0.1:8001".into())
+pub fn user_api_url_for_config(path: &Path) -> String {
+    crate::desktop_config::read_user_api_url(path)
+        .unwrap_or_else(|| DEFAULT_USER_API_URL.to_string())
 }
+
+pub fn user_api_url() -> String {
+    #[cfg(test)]
+    if let Some(url) = USER_API_URL_TEST_OVERRIDE.lock().unwrap().clone() {
+        return url;
+    }
+
+    Layout::from_home()
+        .map(|layout| user_api_url_for_config(&layout.desktop_config))
+        .unwrap_or_else(|_| DEFAULT_USER_API_URL.to_string())
+}
+
 // ── .env 中由本模块管辖的 key（其余 key 不动）──
 pub const ENV_KEY_ACCESS: &str = "USER_ACCESS_TOKEN";
 pub const ENV_KEY_REFRESH: &str = "USER_REFRESH_TOKEN";
@@ -496,6 +511,15 @@ const MEMBER_PUBLIC_KEY_UPLOAD_FAILED: &str = "会员公钥上报失败";
 
 #[cfg(test)]
 pub(crate) static USER_API_URL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+static USER_API_URL_TEST_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Test-only URL override. Callers must hold `USER_API_URL_TEST_LOCK` while setting or clearing it.
+#[cfg(test)]
+pub(crate) fn set_user_api_url_for_test(url: Option<String>) {
+    *USER_API_URL_TEST_OVERRIDE.lock().unwrap() = url;
+}
 
 fn http_client() -> Result<reqwest::blocking::Client, AuthError> {
     reqwest::blocking::Client::builder()
@@ -1520,17 +1544,13 @@ mod tests {
         let (api_url, request_receiver) = mock_member_public_key_upload(
             b"HTTP/1.1 200 OK\r\nContent-Length: 25\r\nConnection: close\r\n\r\n{\"code\":1000,\"data\":null}",
         );
-        let previous_api_url = std::env::var("VIBE_USER_API_URL").ok();
-        std::env::set_var("VIBE_USER_API_URL", api_url);
+        set_user_api_url_for_test(Some(api_url));
 
         let tmp = tempfile::tempdir().unwrap();
         let layout = Layout::new(&tmp.path().join(".vibe-trading"));
         let result = upload_member_public_key("test-access-token", &layout);
 
-        match previous_api_url {
-            Some(value) => std::env::set_var("VIBE_USER_API_URL", value),
-            None => std::env::remove_var("VIBE_USER_API_URL"),
-        }
+        set_user_api_url_for_test(None);
         result.unwrap();
 
         let request = request_receiver
@@ -1558,8 +1578,7 @@ mod tests {
         let (api_url, request_receiver) = mock_member_public_key_upload(
             b"HTTP/1.1 200 OK\r\nContent-Length: 25\r\nConnection: close\r\n\r\n{\"code\":1000,\"data\":null}",
         );
-        let previous_api_url = std::env::var("VIBE_USER_API_URL").ok();
-        std::env::set_var("VIBE_USER_API_URL", api_url);
+        set_user_api_url_for_test(Some(api_url));
 
         let tmp = tempfile::tempdir().unwrap();
         let layout = Layout::new(&tmp.path().join(".vibe-trading"));
@@ -1570,10 +1589,7 @@ mod tests {
         fs::write(&layout.member_key, persisted_private_key).unwrap();
         let result = upload_member_public_key("test-access-token", &layout);
 
-        match previous_api_url {
-            Some(value) => std::env::set_var("VIBE_USER_API_URL", value),
-            None => std::env::remove_var("VIBE_USER_API_URL"),
-        }
+        set_user_api_url_for_test(None);
         result.unwrap();
 
         let request = request_receiver
@@ -1600,17 +1616,13 @@ mod tests {
         let (api_url, request_receiver) = mock_member_public_key_upload(
             b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 50\r\nConnection: close\r\n\r\n{\"message\":\"upstream-detail-should-not-propagate\"}",
         );
-        let previous_api_url = std::env::var("VIBE_USER_API_URL").ok();
-        std::env::set_var("VIBE_USER_API_URL", api_url);
+        set_user_api_url_for_test(Some(api_url));
 
         let tmp = tempfile::tempdir().unwrap();
         let layout = Layout::new(&tmp.path().join(".vibe-trading"));
         let error = upload_member_public_key("test-token", &layout).unwrap_err();
 
-        match previous_api_url {
-            Some(value) => std::env::set_var("VIBE_USER_API_URL", value),
-            None => std::env::remove_var("VIBE_USER_API_URL"),
-        }
+        set_user_api_url_for_test(None);
         request_receiver
             .recv_timeout(std::time::Duration::from_secs(3))
             .unwrap();
@@ -1624,17 +1636,13 @@ mod tests {
         let (api_url, request_receiver) = mock_member_public_key_upload(
             b"HTTP/1.1 200 OK\r\nContent-Length: 62\r\nConnection: close\r\n\r\n{\"code\":1001,\"message\":\"upstream-detail-should-not-propagate\"}",
         );
-        let previous_api_url = std::env::var("VIBE_USER_API_URL").ok();
-        std::env::set_var("VIBE_USER_API_URL", api_url);
+        set_user_api_url_for_test(Some(api_url));
 
         let tmp = tempfile::tempdir().unwrap();
         let layout = Layout::new(&tmp.path().join(".vibe-trading"));
         let error = upload_member_public_key("test-token", &layout).unwrap_err();
 
-        match previous_api_url {
-            Some(value) => std::env::set_var("VIBE_USER_API_URL", value),
-            None => std::env::remove_var("VIBE_USER_API_URL"),
-        }
+        set_user_api_url_for_test(None);
         request_receiver
             .recv_timeout(std::time::Duration::from_secs(3))
             .unwrap();
@@ -1840,18 +1848,14 @@ mod tests {
     fn fetch_vip_credential_reuses_persisted_public_key_and_decrypts_v1_envelopes() {
         let _api_url_lock = USER_API_URL_TEST_LOCK.lock().unwrap();
         let (api_url, request_receiver) = mock_vip_credential_fetch(2);
-        let previous_api_url = std::env::var("VIBE_USER_API_URL").ok();
-        std::env::set_var("VIBE_USER_API_URL", api_url);
+        set_user_api_url_for_test(Some(api_url));
 
         let tmp = tempfile::tempdir().unwrap();
         let layout = Layout::new(&tmp.path().join(".vibe-trading"));
         let first = fetch_vip_credential("test-access-token", &layout);
         let second = fetch_vip_credential("test-access-token", &layout);
 
-        match previous_api_url {
-            Some(value) => std::env::set_var("VIBE_USER_API_URL", value),
-            None => std::env::remove_var("VIBE_USER_API_URL"),
-        }
+        set_user_api_url_for_test(None);
 
         let first = first.unwrap();
         let second = second.unwrap();
@@ -2275,14 +2279,26 @@ mod tests {
 
     #[test]
     fn user_api_url_defaults_to_local_server() {
-        let _api_url_lock = USER_API_URL_TEST_LOCK.lock().unwrap();
-        let previous_api_url = std::env::var("VIBE_USER_API_URL").ok();
-        std::env::remove_var("VIBE_USER_API_URL");
-        assert_eq!(user_api_url(), "http://127.0.0.1:8001");
-        match previous_api_url {
-            Some(value) => std::env::set_var("VIBE_USER_API_URL", value),
-            None => std::env::remove_var("VIBE_USER_API_URL"),
-        }
+        assert_eq!(
+            user_api_url_for_config(Path::new("/missing/desktop-config.json")),
+            DEFAULT_USER_API_URL
+        );
+    }
+
+    #[test]
+    fn user_api_url_uses_the_persisted_json_configuration() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("desktop-config.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"userApiUrl":"https://configured.example.test"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            user_api_url_for_config(&path),
+            "https://configured.example.test"
+        );
     }
 
     #[test]

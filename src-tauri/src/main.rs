@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod auth;
 mod console;
+mod desktop_config;
 mod port;
 mod resources;
 mod runtime_dir;
@@ -46,6 +47,7 @@ fn main() {
             console::console_open_logs,
             console::console_clear_logs,
             console::console_clear_venv,
+            console::console_import_user_api_config,
             console::console_login_captcha,
             console::console_login_send_sms,
             console::console_login_by_phone,
