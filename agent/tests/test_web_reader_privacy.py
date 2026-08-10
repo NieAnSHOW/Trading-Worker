@@ -9,6 +9,7 @@ the default path is byte-identical (no extra header).
 from __future__ import annotations
 
 import json
+import logging
 
 import pytest
 
@@ -108,6 +109,24 @@ def _search_ok(self, query: str, max_results: int) -> str:
     )
 
 
+def test_summary_content_coalesces_null_search_result_fields(captured, monkeypatch):
+    captured["resp"] = _Resp(403, "blocked")
+
+    def search(self, **kwargs):
+        return json.dumps(
+            {
+                "status": "ok",
+                "results": [{"title": None, "url": None, "snippet": None}],
+            }
+        )
+
+    monkeypatch.setattr(wr.WebSearchTool, "execute", search)
+    payload = json.loads(wr.read_url("https://example.com/blocked/article"))
+
+    assert payload["fallback"]["results"] == [{"title": "", "url": "", "snippet": ""}]
+    assert "None" not in payload["content"]
+
+
 def test_jina_abuse_restriction_returns_search_summary(captured, monkeypatch):
     captured["resp"] = _Resp(403, "AbuseAlleviationError: blocked")
     monkeypatch.setattr(wr.WebSearchTool, "execute", _search_ok)
@@ -129,6 +148,49 @@ def test_jina_abuse_restriction_returns_search_summary(captured, monkeypatch):
     assert "secret" not in payload["fallback"]["query"]
     assert "#section" not in payload["fallback"]["query"]
     assert "site:www.reuters.com" in payload["fallback"]["query"]
+
+
+def test_summary_content_excludes_query_and_fragment_but_keeps_traceability(captured, monkeypatch):
+    captured["resp"] = _Resp(403, "blocked")
+    monkeypatch.setattr(wr.WebSearchTool, "execute", _search_ok)
+    url = "https://example.com/private/page?access_token=supersecret#private"
+
+    payload = json.loads(wr.read_url(url))
+
+    assert payload["url"] == url
+    assert payload["source_url"] == url
+    assert "access_token" not in payload["content"]
+    assert "supersecret" not in payload["content"]
+    assert "#private" not in payload["content"]
+    assert "Original URL: https://example.com/private/page" in payload["content"]
+
+
+def test_fallback_search_exception_is_classified_without_logging_exception_text(captured, monkeypatch, caplog):
+    captured["resp"] = _Resp(403, "blocked")
+    secret_text = "backend leaked token=supersecret; internal host=10.0.0.1"
+
+    def fail_search(self, **kwargs):
+        raise RuntimeError(secret_text)
+
+    monkeypatch.setattr(wr.WebSearchTool, "execute", fail_search)
+    with caplog.at_level(logging.WARNING, logger=wr.logger.name):
+        payload = json.loads(wr.read_url("https://example.com/blocked/article"))
+
+    assert payload["error"] == "source access denied and summary search failed"
+    assert secret_text not in caplog.text
+    assert "supersecret" not in caplog.text
+    assert "10.0.0.1" not in caplog.text
+    assert "search backend exception" in caplog.text
+
+
+def test_fallback_query_sanitizes_encoded_search_operators():
+    query = wr._fallback_query(
+        "https://example.com/%73ite%3Aattacker.example/%69nurl%3Asecret/report"
+    )
+
+    assert "site:attacker.example" not in query
+    assert "inurl" not in query
+    assert query.endswith("site:example.com")
 
 
 @pytest.mark.parametrize("status_code", [429, 451])

@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import re
 from urllib.parse import unquote, urlsplit
 
 import requests
@@ -43,6 +44,22 @@ _FALLBACK_MAX_RESULTS = 5
 # DNS hostnames are at most 253 characters, so leave room for the complete
 # ``site:<hostname>`` clause while still bounding the path-derived terms.
 _FALLBACK_QUERY_MAX_LENGTH = 512
+_SEARCH_OPERATOR_TOKENS = frozenset({
+    "and",
+    "cache",
+    "define",
+    "filetype",
+    "inanchor",
+    "inbody",
+    "intext",
+    "intitle",
+    "inurl",
+    "link",
+    "not",
+    "or",
+    "related",
+    "site",
+})
 
 
 def _url_allowed(url: str) -> tuple[bool, str]:
@@ -95,11 +112,18 @@ def _fallback_query(target_url: str) -> str:
     parsed = urlsplit(target_url)
     hostname = (parsed.hostname or "").rstrip(".").lower()
     site_clause = f"site:{hostname}".strip()
-    path_terms = [
-        unquote(part).replace("-", " ").replace("_", " ")
-        for part in parsed.path.split("/")
-        if part and any(char.isalpha() for char in part)
-    ]
+    path_terms = []
+    for part in parsed.path.split("/"):
+        if not part:
+            continue
+        decoded = part
+        for _ in range(2):
+            next_decoded = unquote(decoded)
+            if next_decoded == decoded:
+                break
+            decoded = next_decoded
+        words = re.findall(r"[A-Za-z0-9]+", decoded)
+        path_terms.extend(word for word in words if word.lower() not in _SEARCH_OPERATOR_TOKENS)
     terms = " ".join(path_terms).strip()
     terms_max_length = max(0, _FALLBACK_QUERY_MAX_LENGTH - len(site_clause) - 1)
     if terms_max_length <= 0:
@@ -108,17 +132,24 @@ def _fallback_query(target_url: str) -> str:
     return f"{bounded_terms} {site_clause}".strip()
 
 
+def _summary_source_reference(source_url: str) -> str:
+    """Render only the approved origin/path portion of a source URL."""
+    parsed = urlsplit(source_url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    return f"{origin}{parsed.path or '/'}"
+
+
 def _summary_content(source_url: str, results: list[dict]) -> str:
     """Render search snippets as clearly labelled non-article evidence."""
     lines = [
         "Source access was denied. The following are search-result summaries, not article text.",
-        f"Original URL: {source_url}",
+        f"Original URL: {_summary_source_reference(source_url)}",
         "",
     ]
     for index, result in enumerate(results, start=1):
-        title = str(result.get("title", "")).strip()
-        result_url = str(result.get("url", "")).strip()
-        snippet = str(result.get("snippet", "")).strip()
+        title = "" if result.get("title") is None else str(result.get("title")).strip()
+        result_url = "" if result.get("url") is None else str(result.get("url")).strip()
+        snippet = "" if result.get("snippet") is None else str(result.get("snippet")).strip()
         lines.append(f"{index}. {title}".rstrip())
         if result_url:
             lines.append(f"   {result_url}")
@@ -133,8 +164,8 @@ def _search_fallback(target_url: str, status_code: int) -> tuple[dict[str, objec
     try:
         raw_payload = WebSearchTool().execute(query=query, max_results=_FALLBACK_MAX_RESULTS)
         payload = json.loads(raw_payload)
-    except Exception as exc:  # noqa: BLE001 - preserve source-access classification
-        logger.warning("read_url summary fallback failed: %s", exc)
+    except Exception:  # noqa: BLE001 - preserve source-access classification
+        logger.warning("read_url summary fallback failed: search backend exception")
         return None, "summary search failed"
 
     if not isinstance(payload, dict):
@@ -147,9 +178,9 @@ def _search_fallback(target_url: str, status_code: int) -> tuple[dict[str, objec
 
     safe_results = [
         {
-            "title": str(result.get("title", "")),
-            "url": str(result.get("url", "")),
-            "snippet": str(result.get("snippet", "")),
+            "title": "" if result.get("title") is None else str(result.get("title")),
+            "url": "" if result.get("url") is None else str(result.get("url")),
+            "snippet": "" if result.get("snippet") is None else str(result.get("snippet")),
         }
         for result in results[:_FALLBACK_MAX_RESULTS]
         if isinstance(result, dict)
