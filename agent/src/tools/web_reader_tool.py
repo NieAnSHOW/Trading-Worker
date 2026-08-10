@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import time
 from urllib.parse import unquote, urlsplit
 
 import requests
@@ -40,6 +41,9 @@ _ACCESS_RESTRICTED_MARKERS = (
     "verify you are human",
 )
 _FALLBACK_MAX_RESULTS = 5
+# Keep the summary-only fallback inside the reader's total request budget while
+# reserving most of that budget for the primary Jina request.
+_FALLBACK_MAX_SECONDS = min(5.0, float(_TOTAL_TIMEOUT))
 # DNS hostnames are at most 253 characters, so leave room for the complete
 # ``site:<hostname>`` clause while still bounding the path-derived terms.
 _FALLBACK_QUERY_MAX_LENGTH = 512
@@ -166,14 +170,22 @@ def _summary_content(source_url: str, results: list[dict]) -> str:
     return "\n".join(lines).strip()
 
 
-def _search_fallback(target_url: str, status_code: int) -> tuple[dict[str, object] | None, str]:
+def _search_fallback(
+    target_url: str,
+    status_code: int,
+    deadline: float,
+) -> tuple[dict[str, object] | None, str]:
     """Return a summary-only envelope or a safe, specific failure reason."""
     query = _fallback_query(target_url)
+    if time.monotonic() >= deadline:
+        logger.warning("read_url summary fallback skipped: deadline exhausted")
+        return None, "summary search failed"
     try:
         raw_payload = WebSearchTool().execute(
             query=query,
             max_results=_FALLBACK_MAX_RESULTS,
             _safe_failure_logging=True,
+            _deadline=deadline,
         )
         payload = json.loads(raw_payload)
     except Exception:  # noqa: BLE001 - preserve source-access classification
@@ -242,6 +254,7 @@ def read_url(url: str, no_cache: bool = False) -> str:
         return json.dumps({"status": "error", "error": error}, ensure_ascii=False)
 
     try:
+        request_deadline = time.monotonic() + _TOTAL_TIMEOUT
         headers = {"Accept": "text/markdown"}
         if no_cache:
             headers["x-no-cache"] = "true"
@@ -271,7 +284,8 @@ def read_url(url: str, no_cache: bool = False) -> str:
                 restricted,
             )
             if restricted:
-                fallback, fallback_reason = _search_fallback(target_url, resp.status_code)
+                fallback_deadline = min(request_deadline, time.monotonic() + _FALLBACK_MAX_SECONDS)
+                fallback, fallback_reason = _search_fallback(target_url, resp.status_code, fallback_deadline)
                 if fallback is not None:
                     return json.dumps(fallback, ensure_ascii=False)
                 return json.dumps(

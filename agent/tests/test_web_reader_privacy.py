@@ -130,7 +130,13 @@ def test_summary_content_coalesces_null_search_result_fields(captured, monkeypat
 
 def test_jina_abuse_restriction_returns_search_summary(captured, monkeypatch):
     captured["resp"] = _Resp(403, "AbuseAlleviationError: blocked")
-    monkeypatch.setattr(wr.WebSearchTool, "execute", _search_ok)
+    calls = []
+
+    def search(self, **kwargs):
+        calls.append(kwargs)
+        return _search_ok(self, **kwargs)
+
+    monkeypatch.setattr(wr.WebSearchTool, "execute", search)
     url = "https://www.reuters.com/world/africa/dollar-outlook-2026-05-27/?tracking=secret#section"
 
     payload = json.loads(wr.read_url(url))
@@ -143,12 +149,56 @@ def test_jina_abuse_restriction_returns_search_summary(captured, monkeypatch):
     assert payload["fallback"]["upstream_status"] == 403
     assert payload["fallback"]["backends"] == "qihu_fallback"
     assert payload["fallback"]["results"][0]["url"] == "https://example.com/coverage"
+    assert len(calls) == 1
+    assert calls[0]["_deadline"] > 0
     assert "search-result summaries, not article text" in payload["content"]
     assert "AbuseAlleviationError" not in payload["content"]
     assert "tracking" not in payload["fallback"]["query"]
     assert "secret" not in payload["fallback"]["query"]
     assert "#section" not in payload["fallback"]["query"]
     assert "site:www.reuters.com" in payload["fallback"]["query"]
+
+
+def test_restricted_fallback_skips_search_after_reader_deadline(captured, monkeypatch):
+    captured["resp"] = _Resp(403, "blocked")
+    calls = []
+    timestamps = iter((100.0, 130.0, 130.0))
+
+    monkeypatch.setattr(wr.time, "monotonic", lambda: next(timestamps))
+    monkeypatch.setattr(
+        wr.WebSearchTool,
+        "execute",
+        lambda self, **kwargs: calls.append(kwargs) or _search_ok(self, **kwargs),
+    )
+
+    payload = json.loads(wr.read_url("https://example.com/blocked/article"))
+
+    assert calls == []
+    assert payload["error_code"] == "source_access_denied"
+    assert payload["error"] == "source access denied and summary search failed"
+
+
+def test_restricted_fallback_forwards_deadline_to_cn_search(captured, monkeypatch):
+    captured["resp"] = _Resp(403, "blocked")
+    calls = []
+
+    monkeypatch.delenv("ALIYUN_IQS_API_KEY", raising=False)
+    monkeypatch.delenv("VIBE_TRADING_SEARCH_BACKENDS", raising=False)
+    monkeypatch.setenv("VIBE_TRADING_SEARCH_BING_FALLBACK", "1")
+    monkeypatch.setattr(wr.time, "monotonic", lambda: 100.0)
+
+    def qihu(query, max_results=5, *, deadline=None):
+        calls.append((query, max_results, deadline))
+        return [{"title": "Summary", "href": "https://example.com/summary", "body": "Snippet"}]
+
+    monkeypatch.setattr(ws, "_qihu_search", qihu)
+    monkeypatch.setattr(ws, "_sogou_search", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ws, "_bing_cn_search", lambda *_args, **_kwargs: [])
+
+    payload = json.loads(wr.read_url("https://example.com/blocked/article"))
+
+    assert payload["status"] == "ok"
+    assert calls == [("blocked article site:example.com", 5, 105.0)]
 
 
 def test_summary_content_excludes_query_and_fragment_but_keeps_traceability(captured, monkeypatch):
@@ -186,6 +236,9 @@ def test_fallback_search_exception_is_classified_without_logging_exception_text(
 
 def test_delegated_search_execution_redacts_backend_exception_text(captured, monkeypatch, caplog):
     captured["resp"] = _Resp(403, "blocked")
+    monkeypatch.delenv("ALIYUN_IQS_API_KEY", raising=False)
+    monkeypatch.delenv("VIBE_TRADING_SEARCH_BACKENDS", raising=False)
+    monkeypatch.setenv("VIBE_TRADING_SEARCH_BING_FALLBACK", "1")
     secret_text = "backend leaked token=delegated-secret; internal host=10.0.0.1"
 
     def fail_search(*args, **kwargs):

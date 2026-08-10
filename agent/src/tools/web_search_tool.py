@@ -27,6 +27,29 @@ logger = logging.getLogger(__name__)
 _DEFAULT_BACKENDS = "duckduckgo, google, bing, brave, mojeek, yahoo"
 _MAX_ATTEMPTS = 3
 _BACKOFF_BASE_SECONDS = 0.8
+_HTTP_TIMEOUT_SECONDS = 10
+
+
+class _FallbackDeadlineExceeded(Exception):
+    """Raised when the reader's private summary-search budget is exhausted."""
+
+
+def _bounded_http_timeout(deadline: float | None) -> float:
+    """Return the existing HTTP timeout capped by an internal fallback deadline."""
+    if deadline is None:
+        return _HTTP_TIMEOUT_SECONDS
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise _FallbackDeadlineExceeded
+    return min(_HTTP_TIMEOUT_SECONDS, remaining)
+
+
+def _deadline_error() -> str:
+    """Return the internal error envelope used by the bounded reader fallback."""
+    return json.dumps(
+        {"status": "error", "error": "Web search fallback deadline exhausted."},
+        ensure_ascii=False,
+    )
 
 
 def _failure_classification(exc: Exception) -> str:
@@ -37,7 +60,12 @@ def _failure_classification(exc: Exception) -> str:
     return "backend_error"
 
 
-def _aliyun_iqs_search(query: str, max_results: int = 5) -> list[dict] | None:
+def _aliyun_iqs_search(
+    query: str,
+    max_results: int = 5,
+    *,
+    deadline: float | None = None,
+) -> list[dict] | None:
     """Search via Alibaba Cloud IQS (cloud-iqs.aliyuncs.com) — official API,
     structured (title/link/snippet/hostname), CN-direct (~1s), supports a finance
     category and rerank. Requires ``ALIYUN_IQS_API_KEY``; returns None when unset.
@@ -59,7 +87,7 @@ def _aliyun_iqs_search(query: str, max_results: int = 5) -> list[dict] | None:
         data=body,
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
     )
-    resp = urllib.request.urlopen(req, timeout=10)
+    resp = urllib.request.urlopen(req, timeout=_bounded_http_timeout(deadline))
     data = _json.loads(resp.read().decode("utf-8"))
     out: list[dict] = []
     for item in data.get("pageItems", [])[:max_results]:
@@ -71,7 +99,12 @@ def _aliyun_iqs_search(query: str, max_results: int = 5) -> list[dict] | None:
     return out
 
 
-def _bing_cn_search(query: str, max_results: int = 5) -> list[dict]:
+def _bing_cn_search(
+    query: str,
+    max_results: int = 5,
+    *,
+    deadline: float | None = None,
+) -> list[dict]:
     """Scrape cn.bing.com organic results — no API key, works where ddgs engines are blocked.
 
     Used as a fallback when every ddgs backend times out (common behind restricted
@@ -87,7 +120,7 @@ def _bing_cn_search(query: str, max_results: int = 5) -> list[dict]:
     req = urllib.request.Request(
         url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     )
-    html = urllib.request.urlopen(req, timeout=10).read().decode("utf-8", "ignore")
+    html = urllib.request.urlopen(req, timeout=_bounded_http_timeout(deadline)).read().decode("utf-8", "ignore")
     blocks = _re.findall(r'<li class="b_algo"[^>]*>(.*?)</li>', html, _re.S)
     out: list[dict] = []
     for b in blocks[:max_results]:
@@ -106,7 +139,12 @@ def _bing_cn_search(query: str, max_results: int = 5) -> list[dict]:
     return out
 
 
-def _sogou_search(query: str, max_results: int = 5) -> list[dict]:
+def _sogou_search(
+    query: str,
+    max_results: int = 5,
+    *,
+    deadline: float | None = None,
+) -> list[dict]:
     """Scrape sogou.com results — better CN financial query quality than cn.bing.
 
     Sogou's organic titles hit financial queries precisely (e.g. '茅台 2024 营收
@@ -123,7 +161,7 @@ def _sogou_search(query: str, max_results: int = 5) -> list[dict]:
     req = urllib.request.Request(
         url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     )
-    html = urllib.request.urlopen(req, timeout=10).read().decode("utf-8", "ignore")
+    html = urllib.request.urlopen(req, timeout=_bounded_http_timeout(deadline)).read().decode("utf-8", "ignore")
     blocks = _re.split(r'<div class="vrwrap"', html)[1:]
     out: list[dict] = []
     for b in blocks[:max_results]:
@@ -138,7 +176,12 @@ def _sogou_search(query: str, max_results: int = 5) -> list[dict]:
     return out
 
 
-def _qihu_search(query: str, max_results: int = 5) -> list[dict]:
+def _qihu_search(
+    query: str,
+    max_results: int = 5,
+    *,
+    deadline: float | None = None,
+) -> list[dict]:
     """Scrape so.com (360 Search) organic results — no API key, CN-direct, stable.
 
     Among free CN engines 360 returns the most precise financial-entity hits
@@ -156,7 +199,7 @@ def _qihu_search(query: str, max_results: int = 5) -> list[dict]:
     req = urllib.request.Request(
         url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     )
-    html = urllib.request.urlopen(req, timeout=10).read().decode("utf-8", "ignore")
+    html = urllib.request.urlopen(req, timeout=_bounded_http_timeout(deadline)).read().decode("utf-8", "ignore")
     pairs = _re.findall(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html, _re.S)
     out: list[dict] = []
     for href, inner in pairs:
@@ -234,6 +277,9 @@ class WebSearchTool(BaseTool):
         query = kwargs["query"]
         max_results = min(int(kwargs.get("max_results", 5)), 10)
         safe_failure_logging = bool(kwargs.pop("_safe_failure_logging", False))
+        deadline = kwargs.pop("_deadline", None)
+        if deadline is not None and time.monotonic() >= deadline:
+            return _deadline_error()
         backends_env = os.getenv("VIBE_TRADING_SEARCH_BACKENDS", "").strip()
         overseas_enabled = bool(backends_env)
         backends = backends_env or _DEFAULT_BACKENDS
@@ -242,7 +288,10 @@ class WebSearchTool(BaseTool):
         # ~1s, structured + snippet, best quality). Skips every other engine.
         if os.getenv("ALIYUN_IQS_API_KEY", "").strip():
             try:
-                raw = _aliyun_iqs_search(query, max_results=max_results)
+                if deadline is None:
+                    raw = _aliyun_iqs_search(query, max_results=max_results)
+                else:
+                    raw = _aliyun_iqs_search(query, max_results=max_results, deadline=deadline)
                 if raw:
                     payload = {
                         "status": "ok",
@@ -258,6 +307,8 @@ class WebSearchTool(BaseTool):
                     )
                     return json.dumps(payload, ensure_ascii=False)
                 logger.warning("aliyun_iqs returned no results, falling through")
+            except _FallbackDeadlineExceeded:
+                return _deadline_error()
             except Exception as exc:  # noqa: BLE001
                 if safe_failure_logging:
                     logger.warning("aliyun_iqs failed: %s, falling through", _failure_classification(exc))
@@ -268,7 +319,10 @@ class WebSearchTool(BaseTool):
         # burn ~20-30s on timeouts (brave/yahoo/duckduckgo unreachable from typical
         # CN egress) before reaching the CN chain, so we only contact them when the
         # user explicitly sets VIBE_TRADING_SEARCH_BACKENDS (proxy / overseas egress).
-        if overseas_enabled:
+        # DDGS offers no per-request timeout. The private reader fallback only
+        # uses HTTP helpers that can honor its deadline; direct web_search keeps
+        # the existing DDGS behavior.
+        if overseas_enabled and deadline is None:
             try:
                 from ddgs import DDGS
 
@@ -357,7 +411,12 @@ class WebSearchTool(BaseTool):
         if os.getenv("VIBE_TRADING_SEARCH_BING_FALLBACK", "1").strip().lower() in ("1", "true", "yes"):
             for fb_name, fb_fn in (("qihu", _qihu_search), ("sogou", _sogou_search), ("bing_cn", _bing_cn_search)):
                 try:
-                    raw = fb_fn(query, max_results=max_results)
+                    if deadline is not None and time.monotonic() >= deadline:
+                        return _deadline_error()
+                    if deadline is None:
+                        raw = fb_fn(query, max_results=max_results)
+                    else:
+                        raw = fb_fn(query, max_results=max_results, deadline=deadline)
                     if raw:
                         payload = {
                             "status": "ok",
@@ -373,6 +432,8 @@ class WebSearchTool(BaseTool):
                         )
                         return json.dumps(payload, ensure_ascii=False)
                     fb_err = f"{fb_name} returned no results"
+                except _FallbackDeadlineExceeded:
+                    return _deadline_error()
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "%s fallback failed: %s",

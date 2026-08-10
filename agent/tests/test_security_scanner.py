@@ -71,13 +71,16 @@ def test_web_search_adds_security_warning_to_snippets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeDDGS:
+        calls: list[tuple[str, int, str]] = []
+
         def __enter__(self):
             return self
 
         def __exit__(self, exc_type, exc, tb) -> None:
             return None
 
-        def text(self, query: str, max_results: int):
+        def text(self, query: str, max_results: int, backend: str, **kwargs):
+            self.calls.append((query, max_results, backend))
             return [
                 {
                     "title": "Market note",
@@ -102,6 +105,7 @@ def test_web_search_adds_security_warning_to_snippets(
 
     assert result["status"] == "ok"
     assert result["security_warnings"][0]["field"] == "results.0.snippet"
+    assert FakeDDGS.calls == [("AAPL", 5, "duckduckgo")]
 
 
 def test_web_search_retries_configured_backends_after_transient_failure(
