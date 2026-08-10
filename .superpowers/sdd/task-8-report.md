@@ -1,335 +1,111 @@
-# Task 8 Report: FastAPI news routes
+# Task 8 Report: Bounded Result Cache And Provider Health
 
-## Status
+## Status: DONE
 
-Implemented the authenticated, input-free `/news-api` boundary:
+## What was implemented
 
-- `GET /news-api/snapshot`
-- `POST /news-api/refresh` returns 202
-- `GET /news-api/refresh/status`
+### 1. `agent/src/reliability/cache.py` — `ResultCache`
 
-The route module receives both the existing `require_auth` dependency and a
-coordinator instance. `api_server` creates the lazy singleton once, registers
-the routes before `serve_main` may mount the root SPA, and closes that same
-instance during shutdown. The static fallback preserves SPA HTML for `/news`
-but returns a JSON 404 for unknown `/news-api/...` paths.
+Bounded LRU cache for read-only `StepResult`s. Sits in front of tool invocation in the reliability path only; does NOT touch `agent/src/providers/` loader caches.
 
-No handler accepts a body or query parameters, so callers cannot select a
-track, feed URL, or LLM configuration. Rejections and the unavailable
-coordinator response use constant JSON details; no request values, provider
-details, or credentials are logged or returned.
-
-## TDD Evidence
-
-Tests were written before `news_routes.py` existed. The required initial RED
-command was run from the repository root:
-
-```text
-pytest agent/tests/test_news_routes.py agent/tests/test_security_auth_api.py agent/tests/test_spa_fallback.py -q
+**Interface (verbatim from brief):**
+```python
+class ResultCache:
+    def get(self, key: str, *, now: datetime | None = None) -> StepResult | None: ...
+    def put(self, key: str, result: StepResult, *, ttl_seconds: float) -> None: ...
 ```
 
-It initially stopped at collection because importing the pre-existing
-`api_server` registers `src.api.scheduled_routes.delete_scheduled_run` with
-HTTP 204 and a default body response. On this machine (`Python 3.11.0`,
-`FastAPI 0.115.2`), FastAPI raises `AssertionError: Status code 204 must not
-have a response body` at `agent/src/api/scheduled_routes.py:229`. `git show
-493badb` confirmed that route and its registration order were in the baseline.
-The parent task explicitly expanded Task 8 scope for this compatibility
-prerequisite. A subprocess `import api_server` regression test was RED, then
-GREEN after the DELETE route explicitly uses `response_class=Response`,
-`response_model=None`, and returns an empty 204 `Response`. The explicit
-response model is necessary because postponed `-> None` annotations otherwise
-become a truthy FastAPI response model.
+### 2. `agent/src/reliability/providers.py` — `ProviderHealth`
 
-An isolated news-route GREEN run uses only `FakeNewsCoordinator`,
-`asyncio.Event`, and `TestClient`; it creates neither a feed client nor an LLM:
+Per-provider consecutive-failure counter with bounded circuit and fallback selection.
 
-The initially added GET-with-body assertion correctly failed (`200 != 422`),
-identifying a local conditional that checked bodies only on POST. It was
-changed to reject a nonempty body for every method, then the isolated suite
-passed. Syntax verification also passed:
-
-```text
-python -m py_compile agent/api_server.py agent/src/api/news_routes.py
+**Interface (verbatim from brief):**
+```python
+class ProviderHealth:
+    def record_success(self, provider: str, elapsed_ms: int) -> None: ...
+    def record_failure(self, provider: str, code: ErrorCode) -> None: ...
+    def choose_fallback(self, provider: str, candidates: Sequence[str]) -> str | None: ...
 ```
 
-The existing auth test fixture has a separate local dependency compatibility
-constraint: Starlette 0.39.2's `TestClient` has no `client=(host, port)`
-constructor argument, while the test suite uses that argument to model local
-and remote peers. The initial full GREEN run therefore had 31 pre-request
-`TypeError` failures. In the Task 8-allowed auth test file only, a conditional
-ASGI scope shim supplies the same peer host via a private test header on old
-Starlette. Newer Starlette continues to use its native `client=` argument;
-production auth and dependencies were not changed.
+### 3. Gateway integration (`agent/src/reliability/gateway.py`)
 
-## Verification
+Added optional `cache` and `health` params to `ToolGateway.__init__`. When provided:
+- Cache check after schema validation, before execution (read-only tools only).
+- Telemetry events: `cache_hit` / `cache_miss` via `counters.record_reliability_event`.
+- Health recording after execution: success resets failures, failure increments.
+- Successful read-only results cached with a 300s TTL.
 
-```text
-pytest agent/tests/test_news_routes.py agent/tests/test_security_auth_api.py agent/tests/test_spa_fallback.py -q
-63 passed, 7 warnings
+When cache/health are None (default), behavior is identical to before — existing loader caches and the off-path are completely untouched.
 
-python -m py_compile agent/api_server.py agent/src/api/news_routes.py
-PASS
+## Eviction policy
+
+**LRU via `OrderedDict`.** On `get` hit, `move_to_end` promotes recency. On `put`, if size exceeds `max_size` (default 128), `popitem(last=False)` evicts the oldest entry. Simplest correct LRU using stdlib only.
+
+## Key-normalization design
+
+Caller passes a JSON string key. The cache re-parses it and re-serializes with `sort_keys=True` at all depths (`json.dumps(parsed, sort_keys=True)`). This makes `{"b":2,"a":1}` and `{"a":1,"b":2}` map to the same entry. Non-JSON keys pass through unchanged. The gateway builds keys as `json.dumps({"tool": tool_name, "args": arguments})`, so ordering independence is automatic.
+
+## Monotonic expiry + test injection
+
+Each entry stores two clocks at insertion:
+- `mono_inserted`: `time.monotonic()` — used in production (`now=None`).
+- `wall_inserted`: `datetime.now().timestamp()` — used when `get(now=...)` is injected.
+
+This avoids wall-clock drift in production while allowing tests to inject `datetime` values without sleeping. The `put` method has no `now` param (per the fixed interface); tests inject time solely through `get`.
+
+## How `_is_side_effecting` was reused
+
+The cache does NOT re-derive the side-effecting classification. Instead:
+1. **Result-level defense**: `put` refuses any `StepResult` with `status == UNSAFE_ERROR` or `error.code == UNSAFE_SIDE_EFFECT`.
+2. **Key-level defense**: imports `_SIDE_EFFECTING_NAMES` and `_SIDE_EFFECTING_NAME_PREFIXES` from `gateway.py` and checks the normalized key string against them. Conservative: any key containing `trading_` or `bash` is refused.
+3. **Caller-level defense**: the gateway integration checks `_is_side_effecting(tool_name, tool)` and only calls `cache.put` for read-only `SUCCESS` results.
+
+Triple defense ensures side-effecting results are never cached.
+
+## Files changed
+
+| File | Action |
+|------|--------|
+| `agent/src/reliability/cache.py` | Created (ResultCache) |
+| `agent/src/reliability/providers.py` | Created (ProviderHealth) |
+| `agent/tests/test_reliability_cache.py` | Created (14 tests) |
+| `agent/tests/test_reliability_providers.py` | Created (8 tests) |
+| `agent/src/reliability/gateway.py` | Modified (optional cache/health integration, +63 lines) |
+
+## TDD evidence
+
+**RED** (before implementation):
+```
+ModuleNotFoundError: No module named 'src.reliability.cache'
+ModuleNotFoundError: No module named 'src.reliability.providers'
+2 errors during collection
 ```
 
-## Access-Log Subroute Redaction Exception
-
-### Root Cause and Repair
-
-The initial access-log follow-up only recognized a value beginning with
-`/news-api?`. As a result, a rejected subroute request such as
-`/news-api/snapshot?llm=sk-canary` retained the arbitrary query value in the
-Uvicorn access log.
-
-The helper now partitions the value on `?` and removes the entire query only
-when the resulting path is exactly `/news-api` or begins with `/news-api/`.
-This retains the path for route diagnosis, does not match `/news-apiary`, and
-leaves ordinary endpoint credential-name redaction unchanged.
-
-### TDD Evidence
-
-RED: the existing `LogRecord` canary was changed first to use
-`/news-api/snapshot?llm=sk-canary&foo=bar`. Before the helper change, it
-failed because the rendered log still contained `sk-canary`.
-
-GREEN: the minimal namespace/path partition change made the focused test pass:
-
-```text
-pytest agent/tests/test_sse_ticket_and_headers.py::test_uvicorn_filter_removes_all_query_values_from_news_api_subroute_access_logs -q
-1 passed, 7 warnings
+**GREEN** (after implementation):
+```
+agent/tests/test_reliability_cache.py agent/tests/test_reliability_providers.py: 22 passed
 ```
 
-### Verification
+## Step 5 regression output
 
-```text
-pytest agent/tests/test_sse_ticket_and_headers.py -q
-5 passed, 3 failed, 7 warnings
+```
+pytest agent/tests/test_reliability_cache.py agent/tests/test_reliability_providers.py \
+       agent/tests/test_local_loader.py agent/tests/test_yahoo_loader.py -q
+....................................................                     [100%]
+52 passed in 1.79s
 ```
 
-The three failures remain the documented Starlette 0.39.2 `TestClient` lack
-of `client=(host, port)` support; the new subroute canary and existing generic
-credential redaction test pass.
+All referenced loader test files exist. Full reliability suite + loaders: 183 passed, 0 failed.
 
-```text
-pytest agent/tests/test_news_routes.py agent/tests/test_security_auth_api.py agent/tests/test_spa_fallback.py -q
-64 passed, 21 warnings
+## Verification of hard constraints
 
-python -m py_compile agent/api_server.py agent/src/api/news_routes.py agent/src/api/security.py
-ruff check agent/src/api/security.py agent/tests/test_sse_ticket_and_headers.py
-git diff --check
-PASS
-```
+1. **Never cache side-effecting**: verified by `test_unsafe_error_result_not_cached`, `test_side_effecting_key_refused`, `test_bash_key_refused`. Three layers of defense (result status, error code, key pattern).
+2. **Ordering-independent keys**: verified by `test_normalized_keys_ignore_argument_ordering` and `test_deeply_nested_ordering_normalized`. Deep recursive sort via `json.dumps(sort_keys=True)`.
+3. **Off-path untouched**: the gateway constructor defaults `cache=None, health=None`. When None, zero cache/health code runs. Existing gateway tests (20 tests in `test_reliability_gateway.py`) all pass unchanged. Loader tests (`test_local_loader.py`, `test_yahoo_loader.py`) pass.
+4. **No raw prompt/credential values**: the cache module adds nothing to keys — it only re-normalizes caller-provided JSON. Documented in module docstring.
+5. **Monotonic expiry**: production path uses `time.monotonic()`. Test injection via `now` param uses wall-clock consistently.
+6. **No new dependency**: stdlib only (`json`, `time`, `collections`, `dataclasses`, `datetime`).
 
-## Contract Regression Strengthening
+## Concerns
 
-The production route implementation was already correct when this follow-up
-test-only pass began, so the added assertions are documented as regression
-verification rather than a fabricated RED/GREEN cycle. The focused suite
-verifies that:
-
-- `FakeNewsCoordinator` starts a background refresh that actually awaits an
-  `asyncio.Event`; the second POST sees that task still running and does not
-  create a second task.
-- A corrupted snapshot returns the stable unavailable/corruption envelope, and
-  a synthetic secret canary is absent from both the JSON response and captured
-  logs.
-- A cross-site refresh POST returns 403 before the real app's registered
-  coordinator `start` method is invoked.
-- A controlled `api_server` re-import replaces the coordinator factory and
-  route-registration function only for the import. `TestClient` shutdown then
-  proves the coordinator passed into registration is the exact instance closed
-  by the registered shutdown hook.
-
-Regression verification completed with the existing production implementation:
-
-```text
-pytest agent/tests/test_news_routes.py agent/tests/test_security_auth_api.py agent/tests/test_spa_fallback.py -q
-64 passed, 21 warnings
-
-python -m py_compile agent/api_server.py agent/src/api/news_routes.py
-PASS
-```
-
-## Commit
-
-Current `HEAD`: `feat(news): expose authenticated refresh api` (DCO signed).
-
-## Risk
-
-The tested API server import, global auth, static fallback, and shutdown hook
-are now covered. The remaining warnings are existing FastAPI `on_event`
-deprecation warnings and a Starlette multipart parser warning; they do not
-affect test outcomes.
-
-## Access-Log Query Redaction Follow-up
-
-### Root Cause
-
-`api_server` already installs `_UvicornQuerySecretRedactionFilter` on
-`uvicorn.access`, but its generic parameter-name regex only recognized known
-credential names. Uvicorn renders the request path and query from its access
-log record after the response, so a rejected `/news-api?llm=sk-canary&foo=bar`
-request could still write arbitrary query values to the access log. The
-`/news-api` API contract accepts no query parameters, making the entire query
-illegal input rather than a value that should be selectively retained.
-
-### TDD Evidence
-
-RED: added a minimal `LogRecord` canary regression for
-`/news-api?llm=sk-canary&foo=bar`. Before the filter change, the assertion
-failed because the rendered access log contained `sk-canary`.
-
-GREEN: the filter now replaces an access-log argument beginning with
-`/news-api?` with `/news-api` before applying the existing targeted redaction
-to all other paths. The focused regression passed:
-
-```text
-pytest agent/tests/test_sse_ticket_and_headers.py::test_uvicorn_filter_removes_all_query_values_from_news_api_access_logs -q
-1 passed, 7 warnings
-```
-
-The full module was also run. It has three pre-existing failures caused by
-Starlette 0.39.2 not supporting `TestClient(client=(host, port))`; the new
-access-log regression passes, and this follow-up intentionally does not widen
-scope into that test compatibility issue:
-
-```text
-pytest agent/tests/test_sse_ticket_and_headers.py -q
-5 passed, 3 failed, 7 warnings
-```
-
-Task 8 integration and static checks passed:
-
-```text
-pytest agent/tests/test_news_routes.py agent/tests/test_security_auth_api.py agent/tests/test_spa_fallback.py -q
-64 passed, 21 warnings
-
-python -m py_compile agent/api_server.py agent/src/api/news_routes.py agent/src/api/security.py
-ruff check agent/src/api/security.py agent/tests/test_sse_ticket_and_headers.py
-git diff --check
-PASS
-```
-
-## Trusted Origin Policy Follow-up
-
-### Approved Policy
-
-Unsafe HTTP requests now reject `Sec-Fetch-Site: cross-site` and require any
-supplied `Origin` to be either exact same-origin or an exact normalized member
-of `_CORS_ORIGINS`. Requests without `Origin` retain the existing non-browser
-authentication behavior. The default origins now include both Vite addresses:
-`http://localhost:5899` and `http://127.0.0.1:5899`.
-
-The comparison normalizes only HTTP(S) origins (scheme/host case, trailing host
-dot, default ports, and IPv6 brackets) and rejects credentials, paths, query
-strings, fragments, malformed ports, and non-HTTP(S) values. Custom
-`CORS_ORIGINS` is compared as configured; defaults are not merged into it.
-The guard is invoked by `require_auth`, `require_local_or_auth`, and
-`require_settings_write_auth`. The later review found that this dependency
-coverage did not include unsafe routes registered without one, so the
-application-level repair below is required for global enforcement.
-
-### TDD Evidence
-
-RED, before the implementation:
-
-```text
-pytest agent/tests/test_security_auth_api.py -q -k 'vite_origin_can_refresh_across_ports or unconfigured_loopback_origin_cannot_start_news_refresh or same_origin_request_can_start_news_refresh or non_browser_request_without_origin_can_start_news_refresh or default_cors_origins_include_vite_loopback_hosts'
-2 failed, 3 passed
-```
-
-The arbitrary `http://127.0.0.1:45678` Origin incorrectly received `202` and
-started the news coordinator; the two default Vite origins were absent.
-
-An additional global-write RED demonstrated that the same arbitrary loopback
-Origin could write `/settings/llm` in local dev mode:
-
-```text
-pytest agent/tests/test_security_auth_api.py::test_unconfigured_loopback_origin_cannot_write_llm_settings -q
-1 failed (expected 403, got 200)
-```
-
-GREEN:
-
-```text
-pytest agent/tests/test_security_auth_api.py -q -k 'vite_origin_can_refresh_across_ports or unconfigured_loopback_origin_cannot_start_news_refresh or custom_cors_origins_do_not_merge_loopback_defaults or same_origin_request_can_start_news_refresh or non_browser_request_without_origin_can_start_news_refresh or remote_trusted_origin_still_requires_api_key or unconfigured_loopback_origin_cannot_write_llm_settings or default_cors_origins_include_vite_loopback_hosts'
-8 passed
-```
-
-The tests use local/remote `TestClient` ASGI scope fakes and verify configured
-cross-port Vite access, arbitrary loopback rejection before coordinator work,
-same-origin and no-Origin regressions, custom-origin authority, and remote
-`API_AUTH_KEY` enforcement.
-
-### Verification
-
-```text
-pytest agent/tests/test_news_routes.py agent/tests/test_security_auth_api.py agent/tests/test_spa_fallback.py -q
-72 passed, 21 warnings
-
-pytest agent/tests/test_api_infrastructure.py -q -k 'not test_api_server_is_thin_assembler'
-32 passed, 1 deselected, 7 warnings
-
-python -m py_compile agent/src/api/security.py
-ruff check agent/src/api/security.py agent/tests/test_security_auth_api.py agent/tests/test_api_infrastructure.py
-git diff --check
-PASS
-```
-
-`test_api_server_is_thin_assembler` remains a pre-existing unrelated failure:
-the current `api_server.py` has 655 lines while its stale assertion requires
-fewer than 400. It was not changed because it is outside this security-only
-Task 8 scope.
-
-## Global Unsafe-Origin Middleware Repair
-
-### Root Cause and Repair
-
-The prior trusted-Origin guard only ran through authentication dependencies.
-`POST /watchlist/stocks` and `DELETE /watchlist/stocks/{code}` are registered
-without one, so a loopback request with an arbitrary Origin could reach the
-SQLite write handler.
-
-`_reject_untrusted_browser_write_middleware` now runs for every request before
-route handling. It delegates to the existing
-`_reject_untrusted_browser_write` and `_reject_cross_site_browser_request`
-policy; it does not duplicate Origin parsing or alter CORS configuration.
-Dependency-level checks remain intentionally redundant and fail closed.
-
-### TDD Evidence
-
-RED was added before production code and run from the repository root:
-
-```text
-pytest agent/tests/test_security_auth_api.py::test_unconfigured_loopback_origin_cannot_write_watchlist_before_persistence -q
-1 failed (expected 403, got 200)
-```
-
-The test replaces the watchlist connection with a spy and proves the handler
-executes before the repair. After adding the middleware, the same command was
-GREEN (`1 passed`). Additional global-route regression cases prove that the
-configured `http://localhost:5899` origin, exact same-origin requests, and
-non-browser requests without Origin still reach the watchlist write spy; the
-unconfigured `http://127.0.0.1:45678` case receives 403 with no write.
-
-### Verification
-
-```text
-pytest agent/tests/test_security_auth_api.py -q -k 'watchlist or vite_origin_can_refresh_across_ports or unconfigured_loopback_origin_cannot_start_news_refresh or same_origin_request_can_start_news_refresh or non_browser_request_without_origin_can_start_news_refresh or default_cors_origins_include_vite_loopback_hosts'
-9 passed, 59 deselected, 7 warnings
-
-pytest agent/tests/test_news_routes.py agent/tests/test_security_auth_api.py agent/tests/test_spa_fallback.py agent/tests/test_watchlist_crud.py -q
-83 passed, 21 warnings
-
-pytest agent/tests/test_api_infrastructure.py -q -k 'not test_api_server_is_thin_assembler'
-32 passed, 1 deselected, 7 warnings
-
-python -m py_compile agent/src/api/security.py agent/api_server.py
-ruff check agent/src/api/security.py agent/tests/test_security_auth_api.py agent/tests/test_api_infrastructure.py
-git diff --check
-PASS
-```
-
-`ruff check agent/api_server.py` continues to report the pre-existing
-`ENV_PATH` F811 redefinition, so that unrelated file-wide lint violation is
-not claimed as clean.
+None.
