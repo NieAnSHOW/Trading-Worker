@@ -6,6 +6,7 @@ opts into the overseas ddgs path. All tests mock ddgs.DDGS and the CN scrapers
 so no network calls are made.
 """
 import json
+import logging
 import sys
 from contextlib import contextmanager
 from types import ModuleType
@@ -230,6 +231,22 @@ def test_default_all_cn_fail_returns_error(monkeypatch):
 
     assert out["status"] == "error"
     assert "CN chain" in out["error"]
+
+
+def test_default_mode_preserves_backend_exception_details(monkeypatch, caplog):
+    secret_text = "backend leaked token=direct-secret; internal host=10.0.0.1"
+
+    def fail_search(*args, **kwargs):
+        raise RuntimeError(secret_text)
+
+    monkeypatch.setattr("src.tools.web_search_tool._qihu_search", fail_search)
+    monkeypatch.setattr("src.tools.web_search_tool._sogou_search", fail_search)
+    monkeypatch.setattr("src.tools.web_search_tool._bing_cn_search", fail_search)
+    with caplog.at_level(logging.WARNING):
+        out = json.loads(WebSearchTool().execute(query="direct"))
+
+    assert secret_text in out["error"]
+    assert secret_text in caplog.text
 
 
 def test_bing_fallback_disabled_skips_cn_chain(monkeypatch):

@@ -29,6 +29,14 @@ _MAX_ATTEMPTS = 3
 _BACKOFF_BASE_SECONDS = 0.8
 
 
+def _failure_classification(exc: Exception) -> str:
+    """Return a stable category suitable for internal redacted diagnostics."""
+    lowered = str(exc).lower()
+    if any(marker in lowered for marker in ("timeout", "timed out", "unreachable", "connection", "max retries")):
+        return "network_error"
+    return "backend_error"
+
+
 def _aliyun_iqs_search(query: str, max_results: int = 5) -> list[dict] | None:
     """Search via Alibaba Cloud IQS (cloud-iqs.aliyuncs.com) — official API,
     structured (title/link/snippet/hostname), CN-direct (~1s), supports a finance
@@ -225,6 +233,7 @@ class WebSearchTool(BaseTool):
         """
         query = kwargs["query"]
         max_results = min(int(kwargs.get("max_results", 5)), 10)
+        safe_failure_logging = bool(kwargs.pop("_safe_failure_logging", False))
         backends_env = os.getenv("VIBE_TRADING_SEARCH_BACKENDS", "").strip()
         overseas_enabled = bool(backends_env)
         backends = backends_env or _DEFAULT_BACKENDS
@@ -250,7 +259,10 @@ class WebSearchTool(BaseTool):
                     return json.dumps(payload, ensure_ascii=False)
                 logger.warning("aliyun_iqs returned no results, falling through")
             except Exception as exc:  # noqa: BLE001
-                logger.warning("aliyun_iqs failed: %s, falling through", exc)
+                if safe_failure_logging:
+                    logger.warning("aliyun_iqs failed: %s, falling through", _failure_classification(exc))
+                else:
+                    logger.warning("aliyun_iqs failed: %s, falling through", exc)
 
         # Overseas ddgs engines are opt-in. CN users without a proxy would otherwise
         # burn ~20-30s on timeouts (brave/yahoo/duckduckgo unreachable from typical
@@ -274,7 +286,6 @@ class WebSearchTool(BaseTool):
                     )
                 supports_backend = False
 
-            last_error: Exception | None = None
             for attempt in range(1, _MAX_ATTEMPTS + 1):
                 try:
                     with DDGS() as client:
@@ -287,7 +298,6 @@ class WebSearchTool(BaseTool):
                     supports_backend = False
                     continue
                 except Exception as exc:  # noqa: BLE001 — surface a clean error to the agent
-                    last_error = exc
                     # "No results found" is a definitive empty answer, not a transient
                     # failure — retrying or switching engines won't change it.
                     if "no results" in str(exc).lower():
@@ -301,7 +311,15 @@ class WebSearchTool(BaseTool):
                             },
                             ensure_ascii=False,
                         )
-                    logger.warning("web_search attempt %d/%d failed: %s", attempt, _MAX_ATTEMPTS, exc)
+                    if safe_failure_logging:
+                        logger.warning(
+                            "web_search attempt %d/%d failed: %s",
+                            attempt,
+                            _MAX_ATTEMPTS,
+                            _failure_classification(exc),
+                        )
+                    else:
+                        logger.warning("web_search attempt %d/%d failed: %s", attempt, _MAX_ATTEMPTS, exc)
                     # Network/egress errors (timeout, connection refused, unreachable)
                     # won't recover on retry — stop retrying ddgs and fall through to
                     # the CN chain instead of wasting ~20-30s on more timeouts.
@@ -356,8 +374,16 @@ class WebSearchTool(BaseTool):
                         return json.dumps(payload, ensure_ascii=False)
                     fb_err = f"{fb_name} returned no results"
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("%s fallback failed: %s", fb_name, exc)
-                    fb_err = f"{fb_name}: {exc}"
+                    logger.warning(
+                        "%s fallback failed: %s",
+                        fb_name,
+                        _failure_classification(exc) if safe_failure_logging else exc,
+                    )
+                    fb_err = (
+                        f"{fb_name}: {_failure_classification(exc)}"
+                        if safe_failure_logging
+                        else f"{fb_name}: {exc}"
+                    )
                     continue
         return json.dumps(
             {

@@ -14,6 +14,7 @@ import logging
 import pytest
 
 import src.tools.web_reader_tool as wr
+import src.tools.web_search_tool as ws
 from src.tools.web_reader_tool import read_url
 
 URL = "https://example.com/page"
@@ -91,7 +92,7 @@ def test_reader_uses_bounded_connect_and_read_timeouts(captured):
     assert timeout.total == 30
 
 
-def _search_ok(self, query: str, max_results: int) -> str:
+def _search_ok(self, query: str, max_results: int, **kwargs) -> str:
     assert max_results == 5
     return json.dumps(
         {
@@ -183,6 +184,27 @@ def test_fallback_search_exception_is_classified_without_logging_exception_text(
     assert "search backend exception" in caplog.text
 
 
+def test_delegated_search_execution_redacts_backend_exception_text(captured, monkeypatch, caplog):
+    captured["resp"] = _Resp(403, "blocked")
+    secret_text = "backend leaked token=delegated-secret; internal host=10.0.0.1"
+
+    def fail_search(*args, **kwargs):
+        raise RuntimeError(secret_text)
+
+    monkeypatch.setattr(ws, "_qihu_search", fail_search)
+    monkeypatch.setattr(ws, "_sogou_search", fail_search)
+    monkeypatch.setattr(ws, "_bing_cn_search", fail_search)
+    with caplog.at_level(logging.WARNING):
+        payload = json.loads(wr.read_url("https://example.com/blocked/article"))
+
+    assert payload["status"] == "error"
+    assert "search unavailable" in payload["error"]
+    assert secret_text not in caplog.text
+    assert "delegated-secret" not in caplog.text
+    assert "10.0.0.1" not in caplog.text
+    assert "backend_error" in caplog.text
+
+
 def test_fallback_query_sanitizes_encoded_search_operators():
     query = wr._fallback_query(
         "https://example.com/%73ite%3Aattacker.example/%69nurl%3Asecret/report"
@@ -190,6 +212,13 @@ def test_fallback_query_sanitizes_encoded_search_operators():
 
     assert "site:attacker.example" not in query
     assert "inurl" not in query
+    assert query.endswith("site:example.com")
+
+
+def test_fallback_query_preserves_unicode_path_terms_before_site_clause():
+    query = wr._fallback_query("https://example.com/新闻/贵州茅台2024年报")
+
+    assert query.startswith("新闻 贵州茅台2024年报 ")
     assert query.endswith("site:example.com")
 
 

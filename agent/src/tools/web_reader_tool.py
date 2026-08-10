@@ -5,7 +5,6 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
-import re
 from urllib.parse import unquote, urlsplit
 
 import requests
@@ -122,7 +121,16 @@ def _fallback_query(target_url: str) -> str:
             if next_decoded == decoded:
                 break
             decoded = next_decoded
-        words = re.findall(r"[A-Za-z0-9]+", decoded)
+        words = []
+        current = []
+        for character in decoded:
+            if character.isalnum():
+                current.append(character)
+            elif current:
+                words.append("".join(current))
+                current = []
+        if current:
+            words.append("".join(current))
         path_terms.extend(word for word in words if word.lower() not in _SEARCH_OPERATOR_TOKENS)
     terms = " ".join(path_terms).strip()
     terms_max_length = max(0, _FALLBACK_QUERY_MAX_LENGTH - len(site_clause) - 1)
@@ -162,7 +170,11 @@ def _search_fallback(target_url: str, status_code: int) -> tuple[dict[str, objec
     """Return a summary-only envelope or a safe, specific failure reason."""
     query = _fallback_query(target_url)
     try:
-        raw_payload = WebSearchTool().execute(query=query, max_results=_FALLBACK_MAX_RESULTS)
+        raw_payload = WebSearchTool().execute(
+            query=query,
+            max_results=_FALLBACK_MAX_RESULTS,
+            _safe_failure_logging=True,
+        )
         payload = json.loads(raw_payload)
     except Exception:  # noqa: BLE001 - preserve source-access classification
         logger.warning("read_url summary fallback failed: search backend exception")
