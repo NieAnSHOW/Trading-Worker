@@ -571,3 +571,114 @@ def test_cancel_event_propagates_to_cancelled_terminal(tmp_path: Path) -> None:
         executor=_synth_executor(),
     )
     assert result["status"] == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: wall-clock budget between scheduler rounds
+# ---------------------------------------------------------------------------
+
+
+def test_wall_clock_budget_terminates_run(tmp_path: Path) -> None:
+    """Wall-clock budget between rounds: unresolved steps BLOCKED, not run.
+
+    With wall_clock_seconds=0, the budget trips after the first round. s1
+    (round 1) completes; s2 (depends on s1) is never submitted and lands in
+    BLOCKED. Without the fix both steps run and the run succeeds.
+    """
+    counters.reset_for_test()
+    route = _route(budgets={"steps": 20, "tokens": 3000, "wall_clock_seconds": 0})
+    gw = _RecordingGateway({"s1": lambda attempt: _ok_result("s1")})
+    plan = _plan([
+        PlanStep(id="s1", capability="market_data", tool="get_market_data", timeout_seconds=0.0),
+        PlanStep(id="s2", capability="market_data", tool="get_market_data", depends_on=["s1"], timeout_seconds=0.0),
+    ], budgets={"steps": 20, "tokens": 3000, "wall_clock_seconds": 0})
+    rt = ReliabilityRuntime(
+        router=_FakeRouter(route),
+        gateway=gw,
+        verifier=_IdentityVerifier(),
+        runs_dir=tmp_path,
+        plan_provider=lambda r, msg: plan,
+    )
+    result = rt.run(
+        user_message="quote",
+        session_id="s1",
+        registry=_FakeRegistry(["get_market_data"]),
+        executor=_synth_executor(),
+    )
+    # s1 ran in round 1; s2 blocked (budget tripped between rounds).
+    assert gw.call_count("s1") == 1
+    assert gw.call_count("s2") == 0
+    assert result["status"] != "success"
+    assert result["reliability"]["steps_verified"] == 1
+    assert result["reliability"]["steps_failed"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: crashed synthesis must be failed, not swallowed to success
+# ---------------------------------------------------------------------------
+
+
+def test_synthesis_crash_is_failed_not_success(tmp_path: Path) -> None:
+    """A synthesis executor that raises must produce status=failed, not success.
+
+    Without the fix, the crash is swallowed to empty claims, which the runtime
+    treats as claims_ok=True, landing on success with attempt.completed. The
+    fix distinguishes a crash (synthesis_fault) from a legitimate empty-claims
+    return.
+    """
+    counters.reset_for_test()
+    route = _route()
+    verified = _ok_result("s1")
+    gw = _RecordingGateway({"s1": lambda attempt: verified})
+    plan = _plan([PlanStep(id="s1", capability="market_data", tool="get_market_data")])
+
+    def _crash_executor(**kwargs: Any) -> dict[str, object]:
+        raise RuntimeError("synthesis crashed")
+
+    rt = ReliabilityRuntime(
+        router=_FakeRouter(route),
+        gateway=gw,
+        verifier=_IdentityVerifier(),
+        runs_dir=tmp_path,
+        plan_provider=lambda r, msg: plan,
+    )
+    events: list[tuple[str, dict[str, object]]] = []
+    result = rt.run(
+        user_message="quote",
+        session_id="s1",
+        registry=_FakeRegistry(["get_market_data"]),
+        executor=_crash_executor,
+        event_callback=lambda et, data: events.append((et, data)),
+    )
+
+    assert result["status"] == "failed"
+    assert result.get("reason") == "synthesis error"
+    types = [e[0] for e in events]
+    assert "attempt.completed" not in types
+
+
+def test_fast_path_synthesis_crash_is_failed(tmp_path: Path) -> None:
+    """Fast-path synthesis crash also lands on failed (not success)."""
+    counters.reset_for_test()
+    route = _route(allowed_tools=())
+
+    def _crash_executor(**kwargs: Any) -> dict[str, object]:
+        raise RuntimeError("fast-path synthesis crashed")
+
+    rt = ReliabilityRuntime(
+        router=_FakeRouter(route),
+        verifier=_IdentityVerifier(),
+        runs_dir=tmp_path,
+        plan_provider=lambda r, msg: None,
+    )
+    events: list[tuple[str, dict[str, object]]] = []
+    result = rt.run(
+        user_message="hi",
+        session_id="s1",
+        registry=_FakeRegistry([]),
+        executor=_crash_executor,
+        event_callback=lambda et, data: events.append((et, data)),
+    )
+    assert result["status"] == "failed"
+    assert result.get("reason") == "synthesis error"
+    assert "attempt.completed" not in [e[0] for e in events]

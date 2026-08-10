@@ -234,6 +234,7 @@ class ReliabilityRuntime:
         attempts: dict[str, int] = {s.id: 0 for s in plan.steps}
         total_attempts = 0
         cancelled = self._cancel_event
+        run_start = time.perf_counter()
 
         with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
             while True:
@@ -291,6 +292,12 @@ class ReliabilityRuntime:
                     else:
                         completed[step.id] = result
                         self._record_event(f"step_terminal:{result.status.value}")
+
+                # Wall-clock budget between rounds (step.timeout_seconds is advisory
+                # at the gateway level; the runtime enforces the run-level envelope).
+                wall_budget = route.budgets.get("wall_clock_seconds")
+                if wall_budget is not None and (time.perf_counter() - run_start) >= wall_budget:
+                    break
 
                 # Loop: ready_steps() recomputes with the new completed set.
 
@@ -418,13 +425,23 @@ class ReliabilityRuntime:
 
         claims = self._coerce_claims(synthesis)
         coverage = self._verifier.coverage(claims, [])
-        status = "success" if (not claims or coverage >= 1.0) else "partial"
         content = str(synthesis.get("content", ""))
+        synthesis_fault = bool(synthesis.get("synthesis_fault"))
+
+        if synthesis_fault:
+            status = "failed"
+            reason = "synthesis error"
+        elif not claims or coverage >= 1.0:
+            status = "success"
+            reason = None
+        else:
+            status = "partial"
+            reason = "unverified claims in fast-path synthesis"
 
         return self._build_result(
             status=status,
             content=content,
-            reason=None if status == "success" else "unverified claims in fast-path synthesis",
+            reason=reason,
             run_dir=run_dir,
             route=route,
             steps_total=0,
@@ -475,6 +492,9 @@ class ReliabilityRuntime:
         elif has_unsafe:
             status = "failed"
             reason = "unsafe path blocked"
+        elif bool(synthesis.get("synthesis_fault")):
+            status = "failed"
+            reason = "synthesis error"
         elif success_count and all_steps_verified and claims_ok:
             status = "success"
             reason = None
@@ -542,7 +562,7 @@ class ReliabilityRuntime:
             result["reason"] = reason
         # Merge executor usage / extra fields through (preserve legacy usage keys).
         for key, value in synthesis.items():
-            if key in ("content", "claims", "status"):
+            if key in ("content", "claims", "status", "synthesis_fault"):
                 continue
             result.setdefault(key, value)
 
@@ -595,8 +615,8 @@ class ReliabilityRuntime:
     def _call_executor(executor: Callable[..., dict[str, object]], **kwargs: Any) -> dict[str, object]:
         try:
             out = executor(**kwargs)
-        except Exception:  # noqa: BLE001 - synthesis failure is a failed terminal
-            return {"content": "", "claims": []}
+        except Exception:  # noqa: BLE001 - synthesis crash is a runtime fault, not success
+            return {"content": "", "claims": [], "synthesis_fault": True}
         if not isinstance(out, dict):
             return {"content": str(out), "claims": []}
         return out
