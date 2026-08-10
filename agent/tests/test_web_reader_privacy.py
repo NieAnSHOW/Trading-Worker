@@ -90,7 +90,7 @@ def test_reader_uses_bounded_connect_and_read_timeouts(captured):
     assert timeout.total == 30
 
 
-def _search_ok(self, query: str, max_results: int = 5) -> str:
+def _search_ok(self, query: str, max_results: int) -> str:
     assert max_results == 5
     return json.dumps(
         {
@@ -187,6 +187,24 @@ def test_ordinary_captcha_text_does_not_trigger_fallback(captured, monkeypatch):
     )
 
 
+def test_explicit_captcha_challenge_triggers_fallback(captured, monkeypatch):
+    captured["resp"] = _Resp(500, "Please complete the captcha verification to continue.")
+    calls = []
+
+    def search(self, **kwargs):
+        calls.append(kwargs)
+        return _search_ok(self, **kwargs)
+
+    monkeypatch.setattr(wr.WebSearchTool, "execute", search)
+
+    payload = json.loads(read_url("https://example.com/blocked/article"))
+
+    assert len(calls) == 1
+    assert calls[0]["max_results"] == 5
+    assert payload["status"] == "ok"
+    assert payload["access_level"] == "summary_only"
+
+
 def test_long_fallback_query_preserves_site_clause():
     path = "/".join(f"very-long-path-segment-{index}" for index in range(40))
 
@@ -194,6 +212,14 @@ def test_long_fallback_query_preserves_site_clause():
 
     assert len(query) <= wr._FALLBACK_QUERY_MAX_LENGTH
     assert query.endswith("site:example.com")
+
+
+def test_long_hostname_fallback_query_preserves_complete_site_clause():
+    hostname = ".".join(("a" * 63, "b" * 63, "c" * 63, "d" * 61))
+    query = wr._fallback_query(f"https://{hostname}/" + "very-long-path-" * 40)
+
+    assert query.endswith(f"site:{hostname}")
+    assert len(query) <= wr._FALLBACK_QUERY_MAX_LENGTH
 
 
 def test_empty_fallback_search_returns_stable_access_denied_error(captured, monkeypatch):

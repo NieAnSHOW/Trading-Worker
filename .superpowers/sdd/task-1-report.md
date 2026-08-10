@@ -9,8 +9,8 @@ Files changed:
 - `/Users/niean/Documents/project/Vibe-Trading-Desktop/.worktrees/web-reader-search-fallback/agent/tests/test_web_reader_privacy.py`
 
 Commit:
-- `304119d8c313cf9618d543995ee7673d53425f54`
-- Subject: `feat: add search fallback for restricted web reads`
+- `2845aca672c8de62054e316acf560d555902f7be`
+- Subject: `fix: harden web reader search fallback`
 - DCO trailer present: `Signed-off-by: NieAnSHOW <42022984+NieAnSHOW@users.noreply.github.com>`
 
 ## Implementation
@@ -155,3 +155,29 @@ Commit:
 
 Concerns:
 - The required combined suite has one unrelated baseline failure: `agent/tests/test_web_reader_security.py::test_read_url_allows_public_http_targets` expects `timeout=30`, but the existing implementation passes `urllib3.Timeout(connect=5, read=25, total=30)`. This test was not modified because it is outside the requested fixes.
+
+## Review Fixes
+
+- Preserved the complete `site:<hostname>` clause for every valid hostname by bounding only path-derived terms; hostname normalization removes a trailing DNS dot without truncating the host restriction.
+- Changed `_search_ok` to require `max_results`, so fallback tests fail if the production call omits the explicit limit.
+- Added positive coverage proving an explicit captcha challenge/verification response triggers summary fallback, while retaining ordinary captcha-text non-trigger coverage.
+- Corrected the top-level recorded implementation commit to `2845aca672c8de62054e316acf560d555902f7be`.
+
+Exact validation outputs:
+
+```text
+$ pytest agent/tests/test_web_reader_privacy.py -q
+.................                                                        [100%]
+17 passed in 1.86s
+
+$ pytest agent/tests/test_web_reader_security.py -k 'rejects_non_public_targets_without_network' -q
+..................                                                       [100%]
+18 passed, 1 deselected in 1.29s
+
+$ ruff check agent/src/tools/web_reader_tool.py agent/tests/test_web_reader_privacy.py
+All checks passed!
+
+$ python -m py_compile agent/src/tools/web_reader_tool.py
+
+$ git diff --check
+```

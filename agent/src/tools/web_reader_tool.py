@@ -40,7 +40,9 @@ _ACCESS_RESTRICTED_MARKERS = (
     "verify you are human",
 )
 _FALLBACK_MAX_RESULTS = 5
-_FALLBACK_QUERY_MAX_LENGTH = 240
+# DNS hostnames are at most 253 characters, so leave room for the complete
+# ``site:<hostname>`` clause while still bounding the path-derived terms.
+_FALLBACK_QUERY_MAX_LENGTH = 512
 
 
 def _url_allowed(url: str) -> tuple[bool, str]:
@@ -91,16 +93,17 @@ def _is_source_access_restricted(status_code: int, body: str) -> bool:
 def _fallback_query(target_url: str) -> str:
     """Build a bounded site-scoped query without private URL components."""
     parsed = urlsplit(target_url)
-    site_clause = f"site:{parsed.hostname or ''}".strip()
+    hostname = (parsed.hostname or "").rstrip(".").lower()
+    site_clause = f"site:{hostname}".strip()
     path_terms = [
         unquote(part).replace("-", " ").replace("_", " ")
         for part in parsed.path.split("/")
         if part and any(char.isalpha() for char in part)
     ]
     terms = " ".join(path_terms).strip()
-    terms_max_length = _FALLBACK_QUERY_MAX_LENGTH - len(site_clause) - 1
+    terms_max_length = max(0, _FALLBACK_QUERY_MAX_LENGTH - len(site_clause) - 1)
     if terms_max_length <= 0:
-        return site_clause[:_FALLBACK_QUERY_MAX_LENGTH].rstrip()
+        return site_clause
     bounded_terms = terms[:terms_max_length].rstrip()
     return f"{bounded_terms} {site_clause}".strip()
 
