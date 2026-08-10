@@ -527,8 +527,9 @@ def _step_result_to_tool_result(step: StepResult) -> str:
 def _extract_tool_error_code(result: str | None) -> str | None:
     """Return a redacted error code from a tool result envelope, if any.
 
-    Only short allowlisted string codes are extracted — never raw error text,
-    prompts, arguments, or response bodies.
+    Extracts only the envelope's ``error_code`` field — a bounded short
+    string (<= 60 chars) written by the tool layer, never user data. Raw
+    error text, prompts, arguments, and response bodies are never extracted.
     """
     if not result:
         return None
