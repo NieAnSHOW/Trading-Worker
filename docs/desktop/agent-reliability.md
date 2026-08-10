@@ -63,10 +63,14 @@ change. The runtime writes no persistent state of its own.
 
 ### Off-path safety
 
-When `mode == "off"`, the reliability modules are not even imported on the
-attempt path — the service builds the AgentLoop directly and returns. This is
-enforced by a single early-return branch in `SessionService._run_attempt`. No
-feature flag, no hidden behavior.
+When `mode == "off"`, no reliability CODE runs on the attempt path — the
+service builds the AgentLoop directly and returns. This is enforced by a
+single early-return branch in `SessionService._run_attempt`. No feature flag,
+no hidden behavior. (A few lightweight reliability modules ARE imported for
+type contracts — `agent/src/agent/loop.py` imports `src.reliability.contracts`
+at module level, which executes the reliability package `__init__.py` — but
+they are never invoked and their imports must stay dependency-light so the off
+path cannot be regressed by a future heavy import.)
 
 ---
 
