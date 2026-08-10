@@ -37,18 +37,27 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
 from src.reliability.contracts import ErrorCode, StepResult, StepStatus, ToolError
 from src.tools.redaction import redact_internal_paths
 
+if TYPE_CHECKING:
+    from src.reliability.cache import ResultCache
+    from src.reliability.providers import ProviderHealth
+
 # Exponential backoff base for retry. Tests monkeypatch this to zero; prod
 # keeps a small base so a transient blip is covered without stalling the loop.
 # ponytail: a module constant is the minimum knob; expose per-policy if needed.
 _RETRY_BACKOFF_BASE = 0.1
 _RETRY_BACKOFF_CAP = 2.0
+
+# TTL for cached read-only results in the reliability path. Conservative: most
+# market data is stable enough for a 5-minute window within a single research
+# run. ponytail: a single constant; expose per-policy if needed.
+_CACHE_TTL_SECONDS = 300.0
 
 # Defense-in-depth denylist: these names are side-effecting regardless of any
 # per-tool attribute, so a mislabeled tool cannot become retryable by accident.
@@ -117,15 +126,29 @@ def _redact(text: str) -> str:
 class ToolGateway:
     """Validate, classify, and (for read-only tools) recover tool calls."""
 
-    def __init__(self, registry: Any) -> None:
+    def __init__(
+        self,
+        registry: Any,
+        *,
+        cache: ResultCache | None = None,
+        health: ProviderHealth | None = None,
+    ) -> None:
         """Initialize the gateway.
 
         Args:
             registry: Tool registry with ``get(name)`` returning a BaseTool-like
                 object (or None) whose ``execute(**kwargs)`` returns a JSON
                 string and may raise.
+            cache: Optional result cache for read-only tool results. When
+                provided, the gateway checks the cache before execution and
+                caches successful read-only results. When None (default), no
+                caching occurs — existing behavior is untouched.
+            health: Optional provider health tracker. When provided, the
+                gateway records success/failure after execution.
         """
         self._registry = registry
+        self._cache = cache
+        self._health = health
 
     # -- public API ---------------------------------------------------------
 
@@ -193,7 +216,44 @@ class ToolGateway:
                 step_id, ErrorCode.INVALID_ARGUMENT, hint, retryable=False, repair_hint=hint
             )
 
-        return self._execute_with_recovery(tool_name, tool, arguments, step_id, policy, session_id)
+        # Reliability cache: check before execution (read-only tools only).
+        read_only = not _is_side_effecting(tool_name, tool)
+        if self._cache is not None and read_only:
+            cache_key = json.dumps({"tool": tool_name, "args": arguments}, default=str)
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                self._record_telemetry("cache_hit")
+                return cached
+            self._record_telemetry("cache_miss")
+
+        result = self._execute_with_recovery(tool_name, tool, arguments, step_id, policy, session_id)
+
+        # Record provider health (redacted: only tool name + error code).
+        if self._health is not None:
+            self._record_health(tool_name, result)
+
+        # Cache successful read-only results only.
+        if self._cache is not None and read_only and result.status is StepStatus.SUCCESS:
+            self._cache.put(cache_key, result, ttl_seconds=_CACHE_TTL_SECONDS)
+
+        return result
+
+    @staticmethod
+    def _record_telemetry(name: str) -> None:
+        try:
+            from src.telemetry import counters
+            counters.record_reliability_event(name)
+        except Exception:  # noqa: BLE001 - telemetry must not break execution
+            pass
+
+    def _record_health(self, tool_name: str, result: StepResult) -> None:
+        try:
+            if result.status is StepStatus.SUCCESS:
+                self._health.record_success(tool_name, result.elapsed_ms)
+            elif result.error is not None:
+                self._health.record_failure(tool_name, result.error.code)
+        except Exception:  # noqa: BLE001 - health tracking must not break execution
+            pass
 
     # -- internals ----------------------------------------------------------
 
