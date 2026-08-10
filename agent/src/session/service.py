@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -218,6 +219,7 @@ class SessionService:
         from src.agent.loop import AgentLoop
         from src.memory.persistent import PersistentMemory
         from src.config.loader import load_runtime_agent_config, sanitize_session_overrides
+        from src.telemetry import counters
 
         llm = ChatLLM()
         pm = PersistentMemory()
@@ -238,6 +240,7 @@ class SessionService:
             """Forward MCP server-name collision warnings to the operator event channel."""
             self.event_bus.emit(session_id, "mcp.warning", {"attempt_id": attempt_id, "message": msg})
 
+        _reg_t0 = time.perf_counter()
         registry = await loop.run_in_executor(
             _AGENT_EXECUTOR,
             lambda: build_registry(
@@ -249,6 +252,13 @@ class SessionService:
                 warn_callback=_mcp_collision_warn,
             ),
         )
+        # ponytail: best-effort telemetry — failure must not affect agent
+        try:
+            counters.record_reliability_phase(
+                "registry_build", int((time.perf_counter() - _reg_t0) * 1000)
+            )
+        except Exception:
+            pass
 
         agent = AgentLoop(
             registry=registry,
@@ -263,6 +273,7 @@ class SessionService:
         history = self._convert_messages_to_history(messages) if messages else None
 
         try:
+            _loop_t0 = time.perf_counter()
             result = await loop.run_in_executor(
                 _AGENT_EXECUTOR,
                 lambda: agent.run(
@@ -272,6 +283,13 @@ class SessionService:
                 ),
             )
         finally:
+            # ponytail: best-effort telemetry — record even on exception.
+            try:
+                counters.record_reliability_phase(
+                    "agent_loop", int((time.perf_counter() - _loop_t0) * 1000)
+                )
+            except Exception:
+                pass
             self._active_loops.pop(session_id, None)
 
         # Load metrics from the run output when available.

@@ -501,6 +501,39 @@ def _tool_exception_result(tool_name: str, exc: Exception) -> str:
     )
 
 
+def _extract_tool_error_code(result: str | None) -> str | None:
+    """Return a redacted error code from a tool result envelope, if any.
+
+    Only short allowlisted string codes are extracted — never raw error text,
+    prompts, arguments, or response bodies.
+    """
+    if not result:
+        return None
+    try:
+        data = json.loads(result)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if isinstance(data, dict) and data.get("status") == "error":
+        code = data.get("error_code")
+        if isinstance(code, str) and code:
+            return code[:60]
+        return "unknown"
+    return None
+
+
+def _record_tool_reliability(elapsed_ms: int, result: str | None, *, error_code: str | None = None) -> None:
+    """ponytail: best-effort redacted telemetry — failure must not affect agent."""
+    try:
+        from src.telemetry import counters
+
+        counters.record_reliability_phase("tool", int(elapsed_ms))
+        code = error_code if error_code is not None else _extract_tool_error_code(result)
+        if code:
+            counters.record_reliability_event(f"tool_error:{code}")
+    except Exception:  # noqa: BLE001 - telemetry must never break tool execution
+        pass
+
+
 def _normalize_tool_run_dir(args: dict[str, Any], memory_run_dir: str | None) -> dict[str, Any]:
     """Normalize ``run_dir`` in tool args to an absolute path when possible.
 
@@ -1427,7 +1460,9 @@ class AgentLoop:
             finally:
                 finished.set()
                 _set_emitter(None)
-            return result or "", _elapsed_ms()
+            elapsed = _elapsed_ms()
+            _record_tool_reliability(elapsed, result)
+            return result or "", elapsed
 
         # Readonly tools run in a worker thread so a hung tool becomes a
         # bounded error: late results are discarded and the emitters are
@@ -1457,22 +1492,28 @@ class AgentLoop:
                 elapsed_ms = _emit_timeout_progress(
                     "timeout", f"Tool exceeded {timeout_label} timeout"
                 )
+                timeout_result = json.dumps(
+                    {
+                        "status": "error",
+                        "error_code": "tool_timeout",
+                        "tool": tool_name,
+                        "timeout_seconds": timeout,
+                        "message": f"Tool exceeded {timeout_label} timeout",
+                    },
+                    ensure_ascii=False,
+                )
+                _record_tool_reliability(elapsed_ms, timeout_result)
                 return (
-                    json.dumps(
-                        {
-                            "status": "error",
-                            "error_code": "tool_timeout",
-                            "tool": tool_name,
-                            "timeout_seconds": timeout,
-                            "message": f"Tool exceeded {timeout_label} timeout",
-                        },
-                        ensure_ascii=False,
-                    ),
+                    timeout_result,
                     elapsed_ms,
                 )
         if exc is not None:
+            elapsed = _elapsed_ms()
+            _record_tool_reliability(elapsed, None, error_code="tool_exception")
             raise exc
-        return result or "", _elapsed_ms()
+        elapsed = _elapsed_ms()
+        _record_tool_reliability(elapsed, result)
+        return result or "", elapsed
 
     def _is_tool_readonly(self, tool_name: str) -> bool:
         """Return whether a tool is known to be side-effect free."""

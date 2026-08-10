@@ -36,8 +36,8 @@ def test_snapshot_shape_no_content_fields():
     counters.reset_for_test()
     counters.record_skill_call("x")
     snap = counters.snapshot()
-    # 仅允许的键；不应有任何 prompt/query/symbol 字段
-    allowed_top = {"since", "skill_calls", "backtests", "errors"}
+    # 仅允许的键；不应有任何 prompt/query/symbol 字段（reliability 仅含数值时长 + 短事件名）
+    allowed_top = {"since", "skill_calls", "backtests", "errors", "reliability"}
     assert set(snap.keys()) <= allowed_top
     assert set(snap["backtests"].keys()) == {"count", "total_ms", "by_engine"}
 

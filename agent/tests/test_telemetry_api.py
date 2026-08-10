@@ -30,8 +30,8 @@ def test_sidecar_metrics_no_content_fields(client):
     counters.reset_for_test()
     counters.record_skill_call("x")
     body = client.get("/telemetry/sidecar-metrics").json()
-    # 隐私边界：响应键集合受限
-    assert set(body.keys()) <= {"since", "skill_calls", "backtests", "errors"}
+    # 隐私边界：响应键集合受限（reliability 仅含数值时长 + 短事件名）
+    assert set(body.keys()) <= {"since", "skill_calls", "backtests", "errors", "reliability"}
     flat = str(body)
     # 不得包含任何查询/标的内容（黑名单抽样）
     for taboo in ["prompt", "query", "symbol", "amount", "600519", "茅台"]:
