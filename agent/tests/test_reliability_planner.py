@@ -247,7 +247,7 @@ class TestReadySteps:
             ],
             budgets={"steps": 5, "tokens": 1000, "wall_clock_seconds": 60},
         )
-        ready = PlanValidator().ready_steps(plan, completed=set())
+        ready = PlanValidator().ready_steps(plan, satisfied=set())
         assert {s.id for s in ready} == {"s1", "s2"}
 
     def test_ready_steps_stable_declaration_order(self):
@@ -259,7 +259,7 @@ class TestReadySteps:
             ],
             budgets={"steps": 5, "tokens": 1000, "wall_clock_seconds": 60},
         )
-        ready = PlanValidator().ready_steps(plan, completed=set())
+        ready = PlanValidator().ready_steps(plan, satisfied=set())
         assert [s.id for s in ready] == ["b", "a", "c"]
 
     def test_uncompleted_dep_excluded(self):
@@ -270,7 +270,7 @@ class TestReadySteps:
             ],
             budgets={"steps": 5, "tokens": 1000, "wall_clock_seconds": 60},
         )
-        ready = PlanValidator().ready_steps(plan, completed=set())
+        ready = PlanValidator().ready_steps(plan, satisfied=set())
         assert [s.id for s in ready] == ["s1"]
 
     def test_completed_dep_releases_dependent(self):
@@ -281,7 +281,7 @@ class TestReadySteps:
             ],
             budgets={"steps": 5, "tokens": 1000, "wall_clock_seconds": 60},
         )
-        ready = PlanValidator().ready_steps(plan, completed={"s1"})
+        ready = PlanValidator().ready_steps(plan, satisfied={"s1"})
         assert [s.id for s in ready] == ["s2"]
 
     def test_completed_steps_excluded(self):
@@ -289,7 +289,7 @@ class TestReadySteps:
             steps=[PlanStep(id="s1", capability="market_data")],
             budgets={"steps": 5, "tokens": 1000, "wall_clock_seconds": 60},
         )
-        ready = PlanValidator().ready_steps(plan, completed={"s1"})
+        ready = PlanValidator().ready_steps(plan, satisfied={"s1"})
         assert ready == []
 
     def test_diamond_dependency_ordering(self):

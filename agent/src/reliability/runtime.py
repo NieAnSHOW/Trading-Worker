@@ -229,8 +229,15 @@ class ReliabilityRuntime:
         terminal state (success, non-retryable failure, or budget collapse).
         Steps that never ran (e.g. a dependency failed) are absent and the
         caller treats them as unresolved.
+
+        Dependency scheduling resolves against ``satisfied`` — the set of steps
+        whose final outcome lets a dependent proceed (SUCCESS/PARTIAL) — not
+        against every terminal state, so dependents of a failed step never run.
+        Steps that already reached a terminal state are never re-offered
+        (``_should_schedule`` alone only caps attempts for never-terminal steps).
         """
         completed: dict[str, StepResult] = {}
+        satisfied: set[str] = set()  # final outcomes that satisfy dependents
         attempts: dict[str, int] = {s.id: 0 for s in plan.steps}
         total_attempts = 0
         cancelled = self._cancel_event
@@ -241,8 +248,8 @@ class ReliabilityRuntime:
                 if cancelled.is_set():
                     break
                 ready = [
-                    s for s in self._planner.ready_steps(plan, set(completed))
-                    if self._should_schedule(s, attempts)
+                    s for s in self._planner.ready_steps(plan, satisfied)
+                    if s.id not in completed and self._should_schedule(s, attempts)
                 ]
                 if not ready:
                     break
@@ -283,9 +290,15 @@ class ReliabilityRuntime:
                         self._progress_payload(step, result, attempts[step.id]),
                     )
 
-                    if result.status is StepStatus.SUCCESS:
+                    if result.status in (StepStatus.SUCCESS, StepStatus.PARTIAL):
+                        # Both satisfy dependents: the step ran and produced
+                        # output; evidence grading is per-step and must not
+                        # block a dependent that can consume the data.
                         completed[step.id] = result
-                        self._record_event("step_success")
+                        satisfied.add(step.id)
+                        self._record_event(
+                            "step_success" if result.status is StepStatus.SUCCESS else "step_partial"
+                        )
                     elif self._is_retryable_read(step, result, attempts[step.id]):
                         # Leave un-completed: ready_steps() will re-offer it.
                         self._record_event("step_retry")
@@ -299,7 +312,7 @@ class ReliabilityRuntime:
                 if wall_budget is not None and (time.perf_counter() - run_start) >= wall_budget:
                     break
 
-                # Loop: ready_steps() recomputes with the new completed set.
+                # Loop: ready_steps() recomputes with the new satisfied set.
 
         # Anything still unresolved (cancellation, budget collapse, or a failed
         # dependency) is recorded as blocked so the verifier sees a terminal state.

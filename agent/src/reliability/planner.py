@@ -7,7 +7,8 @@ Provides:
     gating for readonly capabilities, and step-count/token/wall-clock budget
     enforcement.
   - :meth:`PlanValidator.ready_steps` returns steps whose dependencies are
-    all in the ``completed`` set, in stable declaration order.
+    all in the ``satisfied`` set (steps whose outcome lets a dependent
+    proceed), in stable declaration order.
 
 No graph library: the DAG logic is standard Kahn-style traversal.
 """
@@ -187,13 +188,16 @@ class PlanValidator:
                 f"plan wall-clock budget {plan_wall}s exceeds route envelope {route_wall}s"
             )
 
-    def ready_steps(self, plan: ExecutionPlan, completed: set[str]) -> list[PlanStep]:
-        """Return steps whose dependencies are all in ``completed``.
+    def ready_steps(self, plan: ExecutionPlan, satisfied: set[str]) -> list[PlanStep]:
+        """Return steps whose dependencies are all in ``satisfied``.
 
-        Steps already in ``completed`` are excluded. Output is in stable
-        declaration order (the order steps appear in ``plan.steps``).
+        ``satisfied`` is the set of step ids whose final outcome lets a
+        dependent proceed (SUCCESS/PARTIAL at the runtime layer) — NOT every
+        terminal state. Dependents of a failed step stay un-scheduled and end
+        BLOCKED. Steps already in ``satisfied`` are excluded. Output is in
+        stable declaration order (the order steps appear in ``plan.steps``).
         """
-        done = set(completed)
+        done = set(satisfied)
         return [
             s
             for s in plan.steps

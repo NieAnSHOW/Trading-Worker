@@ -302,6 +302,51 @@ def test_independent_steps_concurrent_and_dependent_waits(tmp_path: Path) -> Non
     assert elapsed < 0.55
 
 
+def test_failed_dependency_never_schedules_dependent(tmp_path: Path) -> None:
+    """A non-retryably failed step must not unlock its dependents.
+
+    ready_steps() must resolve dependencies against the set of steps that
+    SATISFIED them (SUCCESS/PARTIAL), not against every terminal state —
+    otherwise dependents of a failed step get scheduled and their provider
+    calls are wasted, contradicting the documented ``blocked`` = "budget or
+    failed dependency" semantics.
+    """
+    counters.reset_for_test()
+    route = _route(
+        capabilities=("market_data", "symbol"),
+        allowed_tools=("get_market_data", "search_symbol"),
+    )
+    gw = _RecordingGateway({
+        "s1": lambda _a: _recoverable("s1", code=ErrorCode.AMBIGUOUS_SYMBOL, retryable=False),
+        "s2": lambda _a: _ok_result("s2"),
+    })
+    plan = _plan([
+        PlanStep(id="s1", capability="market_data", tool="get_market_data"),
+        PlanStep(id="s2", capability="symbol", tool="search_symbol", depends_on=["s1"]),
+    ])
+    rt = ReliabilityRuntime(
+        router=_FakeRouter(route),
+        gateway=gw,
+        verifier=_IdentityVerifier(),
+        runs_dir=tmp_path,
+        plan_provider=lambda r, msg: plan,
+    )
+    result = rt.run(
+        user_message="analyze",
+        session_id="s1",
+        registry=_FakeRegistry(["get_market_data", "search_symbol"]),
+        executor=_synth_executor(),
+    )
+
+    assert gw.call_count("s2") == 0, "dependent of a failed step must never run"
+    assert gw.call_count("s1") == 1
+    assert result["status"] == "failed"
+    assert result["reliability"]["steps_total"] == 2
+    # s1 failed AND s2 blocked (never ran) are both counted as failed steps.
+    assert result["reliability"]["steps_failed"] == 2
+    assert result["reliability"]["steps_verified"] == 0
+
+
 # ---------------------------------------------------------------------------
 # Step 1c: retryable failure follows the configured gateway fallback
 # ---------------------------------------------------------------------------
