@@ -149,7 +149,7 @@ $ git diff --check
 ```
 
 Commit:
-- `57c3c8ad81f5327e45c06e1ae0d3acd0691ed36b`
+- Implementation commit: `2845aca672c8de62054e316acf560d555902f7be`
 - Subject: `fix: harden web reader search fallback`
 - DCO trailer present: `Signed-off-by: NieAnSHOW <42022984+NieAnSHOW@users.noreply.github.com>`
 
