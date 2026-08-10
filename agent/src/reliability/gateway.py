@@ -338,6 +338,10 @@ class ToolGateway:
         if _is_side_effecting(fb_name, fb_tool):
             # A write tool is never a valid fallback for a read-only failure.
             return None
+        # Re-validate arguments against the FALLBACK tool's schema: the fallback
+        # is a tool execute call, so invalid arguments must never reach it.
+        if self._validate_schema(fb_tool, arguments) is not None:
+            return None
         # One attempt, no further retry/fallback chaining (bounded).
         return self._execute_once(fb_name, fb_tool, arguments, step_id)
 

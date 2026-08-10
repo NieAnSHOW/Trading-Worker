@@ -364,6 +364,44 @@ class TestFallback:
         assert res.error.code == ErrorCode.AUTH_REQUIRED
         assert fallback.call_count == 0
 
+    def test_fallback_not_executed_when_args_invalid_for_fallback_schema(self) -> None:
+        # Global constraint: invalid arguments NEVER reach the actual tool
+        # execute call. The fallback IS a tool execute call, so the primary's
+        # arguments must be re-validated against the fallback tool's schema.
+        primary = _FakeTool(
+            "primary",
+            side_effecting=False,
+            parameters={
+                "type": "object",
+                "properties": {"symbol": {"type": "string"}},
+                "required": ["symbol"],
+            },
+            responses=[json.dumps({"status": "error", "error": "no data", "empty": True})],
+        )
+        # Fallback requires a DIFFERENT field the primary was not called with.
+        fallback = _FakeTool(
+            "backup",
+            side_effecting=False,
+            parameters={
+                "type": "object",
+                "properties": {"ticker": {"type": "string"}},
+                "required": ["ticker"],
+            },
+            responses=[json.dumps({"status": "ok", "price": 42})],
+        )
+        gw = ToolGateway(_FakeRegistry([primary, fallback]))
+        policy = GatewayPolicy(
+            allowed_tools=frozenset({"primary", "backup"}),
+            fallback_tools={"primary": "backup"},
+        )
+        res = gw.execute("primary", {"symbol": "AAPL"}, step_id="s1", policy=policy)
+        # Fallback must NOT run: its schema rejects the primary's arguments.
+        assert fallback.call_count == 0
+        # No fallback applied -> the primary's data_unavailable error surfaces.
+        assert res.status == StepStatus.RECOVERABLE_ERROR
+        assert res.error is not None
+        assert res.error.code == ErrorCode.DATA_UNAVAILABLE
+
 
 # -- Step 1g: WRITE TOOL IS NEVER RETRIED OR FALLBACK -----------------------
 # This is the never-retry-writes property — the single most important test.
