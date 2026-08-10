@@ -86,6 +86,9 @@ def _coerce_data(value: Any) -> Any:
     if isinstance(value, dict):
         # keys must be strings for JSON; coerce defensively
         return {str(k): _coerce_data(v) for k, v in value.items()}
+    if isinstance(value, (set, frozenset)):
+        # Deterministic list for JSON; key=str keeps mixed types from raising.
+        return sorted((_coerce_data(v) for v in value), key=str)
     return str(value)
 
 

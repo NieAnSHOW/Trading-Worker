@@ -213,15 +213,8 @@ class ContextBuilder:
         # descriptions and the reported tool_count to the allowlist, so the
         # model sees a coherent "you have N tools" with exactly N descriptions.
         # The registry itself is never mutated — the gateway still sees all tools.
-        if self._allowed_tool_names is not None:
-            visible_tools = [
-                t for n, t in self.registry._tools.items()
-                if n in self._allowed_tool_names
-            ]
-            tool_count = len(visible_tools)
-        else:
-            visible_tools = list(self.registry._tools.values())
-            tool_count = len(self.registry._tools)
+        visible_tools = self._visible_tools()
+        tool_count = len(visible_tools)
 
         return _SYSTEM_PROMPT.format(
             tool_count=tool_count,
@@ -288,6 +281,15 @@ class ContextBuilder:
         messages.append({"role": "user", "content": enriched})
         return messages
 
+    def _visible_tools(self) -> List[Any]:
+        """All registry tools, narrowed to the allowlist when one is set.
+
+        The registry itself is never mutated — the gateway still sees all tools.
+        """
+        if self._allowed_tool_names is not None:
+            return [t for n, t in self.registry._tools.items() if n in self._allowed_tool_names]
+        return list(self.registry._tools.values())
+
     def _format_tool_descriptions(self, tools: Optional[List[Any]] = None) -> str:
         """Format tool descriptions.
 
@@ -297,13 +299,7 @@ class ContextBuilder:
                 ``allowed_tool_names`` (if set); otherwise renders all.
         """
         if tools is None:
-            if self._allowed_tool_names is not None:
-                tools = [
-                    t for n, t in self.registry._tools.items()
-                    if n in self._allowed_tool_names
-                ]
-            else:
-                tools = list(self.registry._tools.values())
+            tools = self._visible_tools()
         lines = []
         for tool in tools:
             params = tool.parameters.get("properties", {})

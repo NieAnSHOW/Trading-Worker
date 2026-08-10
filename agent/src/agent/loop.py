@@ -46,6 +46,7 @@ from src.providers.content_filter import (
 from src.tools.background_tools import get_background_manager
 from src.tools.redaction import redact_log_text, redact_payload
 from src.reliability.contracts import StepResult, StepStatus
+from src.telemetry import counters
 
 RUNS_DIR = Path(__file__).resolve().parents[2] / "runs"
 SESSIONS_DIR = Path(__file__).resolve().parents[2] / "sessions"
@@ -533,6 +534,10 @@ def _extract_tool_error_code(result: str | None) -> str | None:
     """
     if not result:
         return None
+    # Error envelopes always open with {"status": "error", ...}; anything else
+    # cannot carry an error_code — skip the JSON re-parse on the success path.
+    if '"status": "error"' not in result[:512]:
+        return None
     try:
         data = json.loads(result)
     except (TypeError, json.JSONDecodeError):
@@ -548,8 +553,6 @@ def _extract_tool_error_code(result: str | None) -> str | None:
 def _record_tool_reliability(elapsed_ms: int, result: str | None, *, error_code: str | None = None) -> None:
     """ponytail: best-effort redacted telemetry — failure must not affect agent."""
     try:
-        from src.telemetry import counters
-
         counters.record_reliability_phase("tool", int(elapsed_ms))
         code = error_code if error_code is not None else _extract_tool_error_code(result)
         if code:
@@ -1322,7 +1325,6 @@ class AgentLoop:
             result, elapsed_ms = self._invoke_tool(tc.name, args)
             # ponytail: best-effort telemetry — failure must not affect agent
             try:
-                from src.telemetry import counters
                 counters.record_skill_call(tc.name)
             except Exception:
                 pass
@@ -1378,7 +1380,6 @@ class AgentLoop:
 
         # ponytail: best-effort telemetry — failure must not affect agent
         try:
-            from src.telemetry import counters
             counters.record_skill_call(tc.name)
         except Exception:
             pass
