@@ -11,6 +11,7 @@ from src.reliability.contracts import (
     StepStatus,
     ToolError,
 )
+from src.reliability.gateway import GatewayPolicy, ToolGateway
 from src.reliability.planner import ExecutionPlan, PlanStep, PlanValidator
 from src.reliability.router import TaskRouter
 
@@ -19,10 +20,12 @@ __all__ = [
     "ErrorCode",
     "ExecutionPlan",
     "EvidenceRef",
+    "GatewayPolicy",
     "PlanStep",
     "PlanValidator",
     "StepResult",
     "StepStatus",
     "TaskRouter",
     "ToolError",
+    "ToolGateway",
 ]

@@ -45,6 +45,7 @@ from src.providers.content_filter import (
 )
 from src.tools.background_tools import get_background_manager
 from src.tools.redaction import redact_log_text, redact_payload
+from src.reliability.contracts import StepResult, StepStatus
 
 RUNS_DIR = Path(__file__).resolve().parents[2] / "runs"
 SESSIONS_DIR = Path(__file__).resolve().parents[2] / "sessions"
@@ -501,6 +502,28 @@ def _tool_exception_result(tool_name: str, exc: Exception) -> str:
     )
 
 
+def _step_result_to_tool_result(step: StepResult) -> str:
+    """Convert a gateway StepResult into the loop's tool-result envelope string.
+
+    Success: the tool's own JSON envelope is forwarded verbatim (tools already
+    return JSON strings). Error: re-wrapped as ``{"status": "error", ...}`` so
+    the existing ``_is_tool_success`` / telemetry / trace paths are unchanged.
+    """
+    if step.status is StepStatus.SUCCESS:
+        data = step.data
+        return data if isinstance(data, str) else json.dumps(
+            {"status": "ok", "data": data}, ensure_ascii=False, default=str
+        )
+    err = step.error
+    payload: Dict[str, Any] = {"status": "error"}
+    if err is not None:
+        payload["error_code"] = err.code.value
+        payload["error"] = err.message
+        if err.repair_hint:
+            payload["repair_hint"] = err.repair_hint
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def _extract_tool_error_code(result: str | None) -> str | None:
     """Return a redacted error code from a tool result envelope, if any.
 
@@ -577,6 +600,7 @@ class AgentLoop:
         event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
         max_iterations: int = 50,
         persistent_memory: Optional[Any] = None,
+        gateway_invoke: Optional[Callable[[str, Dict[str, Any]], "StepResult"]] = None,
     ) -> None:
         """Initialize AgentLoop.
 
@@ -587,6 +611,13 @@ class AgentLoop:
             event_callback: Event callback (event_type, data).
             max_iterations: Maximum number of loop iterations.
             persistent_memory: PersistentMemory for cross-session recall.
+            gateway_invoke: Optional callback that routes a tool call through
+                the reliability ToolGateway. Receives (tool_name, args) and
+                returns a StepResult; the loop converts it to the existing
+                tool-result envelope. When None (default), the loop calls the
+                registry directly — byte-for-byte the legacy path. Heartbeat,
+                timeout, duplicate-success, and cancellation behavior apply to
+                both paths identically.
         """
         self.registry = registry
         self.llm = llm
@@ -598,6 +629,7 @@ class AgentLoop:
         self._previous_summary: str = ""
         self._persistent_memory = persistent_memory
         self._run_iteration: int = 0
+        self._gateway_invoke = gateway_invoke
 
     def cancel(self) -> None:
         """Cancel the current loop.
@@ -1456,7 +1488,7 @@ class AgentLoop:
             _set_emitter(_on_progress)
             try:
                 with _heartbeat_timer():
-                    result = self.registry.execute(tool_name, args)
+                    result = self._tool_execute(tool_name, args)
             finally:
                 finished.set()
                 _set_emitter(None)
@@ -1472,7 +1504,7 @@ class AgentLoop:
         def _worker() -> None:
             _set_emitter(_on_progress)
             try:
-                result_queue.put((self.registry.execute(tool_name, args), None))
+                result_queue.put((self._tool_execute(tool_name, args), None))
             except BaseException as exc:  # noqa: BLE001 - propagate through caller thread
                 result_queue.put((None, exc))
             finally:
@@ -1514,6 +1546,23 @@ class AgentLoop:
         elapsed = _elapsed_ms()
         _record_tool_reliability(elapsed, result)
         return result or "", elapsed
+
+    def _tool_execute(self, tool_name: str, args: Dict[str, Any]) -> str:
+        """Run one tool call through the registry or, when configured, the gateway.
+
+        When ``gateway_invoke`` is absent this is byte-for-byte the legacy
+        ``self.registry.execute`` path. When present, the gateway classifies
+        exceptions, validates args, and applies read-only retry/fallback; its
+        StepResult is converted to the existing tool-result envelope so the
+        surrounding heartbeat/timeout/cancellation scaffolding is unchanged.
+        """
+        if self._gateway_invoke is None:
+            return self.registry.execute(tool_name, args)
+        try:
+            step = self._gateway_invoke(tool_name, args)
+        except Exception as exc:  # noqa: BLE001 - gateway must not crash the agent
+            return _tool_exception_result(tool_name, exc)
+        return _step_result_to_tool_result(step)
 
     def _is_tool_readonly(self, tool_name: str) -> bool:
         """Return whether a tool is known to be side-effect free."""

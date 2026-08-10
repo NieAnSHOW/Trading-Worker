@@ -18,6 +18,14 @@ class BaseTool(ABC):
         description: Tool description shown to the LLM.
         parameters: Parameter definition in JSON Schema format.
         repeatable: Whether the tool may be called more than once.
+        is_readonly: Whether the tool is side-effect free (used by the loop to
+            decide whether a hung tool may be cancelled on timeout).
+        side_effecting: Conservative gateway classification. ``True`` (default)
+            means the ToolGateway must treat the tool as write-like and refuse
+            to retry or fall back from it. Read-only tools opt into gateway
+            recovery by setting ``side_effecting = False``. The gateway also
+            enforces a namespace rule (``trading_*`` and ``bash`` are always
+            side-effecting regardless of this attribute) as defense-in-depth.
     """
 
     name: str = ""
@@ -25,6 +33,7 @@ class BaseTool(ABC):
     parameters: Dict[str, Any] = {}
     repeatable: bool = False
     is_readonly: bool = True
+    side_effecting: bool = True
 
     @classmethod
     def check_available(cls) -> bool:

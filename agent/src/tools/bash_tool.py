@@ -26,6 +26,7 @@ class BashTool(BaseTool):
     }
     repeatable = True
     is_readonly = False
+    side_effecting = True  # explicit: shell is always write-like; never retried by the gateway
 
     def execute(self, **kwargs: Any) -> str:
         """Execute a shell command.
