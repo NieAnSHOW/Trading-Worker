@@ -31,7 +31,13 @@ _ACCESS_RESTRICTED_MARKERS = (
     "automated access",
     "bot detection",
     "bot challenge",
-    "captcha",
+    "captcha challenge",
+    "captcha required",
+    "captcha verification",
+    "complete the captcha",
+    "enter the captcha",
+    "solve the captcha",
+    "verify you are human",
 )
 _FALLBACK_MAX_RESULTS = 5
 _FALLBACK_QUERY_MAX_LENGTH = 240
@@ -85,14 +91,18 @@ def _is_source_access_restricted(status_code: int, body: str) -> bool:
 def _fallback_query(target_url: str) -> str:
     """Build a bounded site-scoped query without private URL components."""
     parsed = urlsplit(target_url)
+    site_clause = f"site:{parsed.hostname or ''}".strip()
     path_terms = [
         unquote(part).replace("-", " ").replace("_", " ")
         for part in parsed.path.split("/")
         if part and any(char.isalpha() for char in part)
     ]
     terms = " ".join(path_terms).strip()
-    query = f"{terms} site:{parsed.hostname or ''}".strip()
-    return query[:_FALLBACK_QUERY_MAX_LENGTH].rstrip()
+    terms_max_length = _FALLBACK_QUERY_MAX_LENGTH - len(site_clause) - 1
+    if terms_max_length <= 0:
+        return site_clause[:_FALLBACK_QUERY_MAX_LENGTH].rstrip()
+    bounded_terms = terms[:terms_max_length].rstrip()
+    return f"{bounded_terms} {site_clause}".strip()
 
 
 def _summary_content(source_url: str, results: list[dict]) -> str:
@@ -127,8 +137,7 @@ def _search_fallback(target_url: str, status_code: int) -> tuple[dict[str, objec
     if not isinstance(payload, dict):
         return None, "summary search failed"
     if payload.get("status") != "ok":
-        error = str(payload.get("error", "search unavailable")).strip() or "search unavailable"
-        return None, f"summary search failed: {error}"
+        return None, "summary search failed: search unavailable"
     results = payload.get("results")
     if not isinstance(results, list) or not results:
         return None, "summary search returned no results"

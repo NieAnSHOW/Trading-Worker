@@ -151,10 +151,11 @@ def test_access_restriction_statuses_return_search_summary(captured, monkeypatch
 
 def test_fallback_search_error_returns_stable_access_denied_error(captured, monkeypatch):
     captured["resp"] = _Resp(403, "blocked")
+    malicious_error = "backend leaked token=secret; internal host=10.0.0.1"
     monkeypatch.setattr(
         wr.WebSearchTool,
         "execute",
-        lambda self, **kwargs: json.dumps({"status": "error", "error": "search unavailable"}),
+        lambda self, **kwargs: json.dumps({"status": "error", "error": malicious_error}),
     )
     url = "https://example.com/blocked/article"
 
@@ -168,6 +169,31 @@ def test_fallback_search_error_returns_stable_access_denied_error(captured, monk
         "upstream_status": 403,
         "suggested_query": "blocked article site:example.com",
     }
+    assert malicious_error not in payload["error"]
+
+
+def test_ordinary_captcha_text_does_not_trigger_fallback(captured, monkeypatch):
+    captured["resp"] = _Resp(500, "This article explains how captcha systems work.")
+
+    def fail_search(*args, **kwargs):
+        raise AssertionError("ordinary captcha text should not trigger fallback")
+
+    monkeypatch.setattr(wr.WebSearchTool, "execute", fail_search)
+
+    payload = json.loads(wr.read_url(URL))
+
+    assert payload["error"] == (
+        "remote reader returned HTTP 500: This article explains how captcha systems work."
+    )
+
+
+def test_long_fallback_query_preserves_site_clause():
+    path = "/".join(f"very-long-path-segment-{index}" for index in range(40))
+
+    query = wr._fallback_query(f"https://example.com/{path}")
+
+    assert len(query) <= wr._FALLBACK_QUERY_MAX_LENGTH
+    assert query.endswith("site:example.com")
 
 
 def test_empty_fallback_search_returns_stable_access_denied_error(captured, monkeypatch):
