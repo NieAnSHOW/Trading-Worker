@@ -40,6 +40,15 @@ class TestAttributionLayersPresence:
 
 
 @pytest.mark.unit
+def test_system_prompt_marks_summary_only_reads_as_non_article_evidence() -> None:
+    from src.agent.context import _SYSTEM_PROMPT
+
+    assert 'access_level: "summary_only"' in _SYSTEM_PROMPT
+    assert "must not claim to have read the original article" in _SYSTEM_PROMPT
+    assert "sole support for a specific factual claim" in _SYSTEM_PROMPT
+
+
+@pytest.mark.unit
 class TestAttributionSkillReferences:
     """Verify skill routing references in attribution layers."""
 

@@ -289,6 +289,15 @@ def test_worker_prompt_data_citation_discipline_precedes_execution_rules() -> No
     assert prompt.index("Data Citation Discipline") < prompt.index("## Execution Rules")
 
 
+def test_worker_prompt_marks_summary_only_reads_as_non_article_evidence() -> None:
+    prompt = build_worker_prompt(_spec(), {}, "(no matching skills)")
+
+    assert 'access_level: "summary_only"' in prompt
+    assert "must not claim to have read the original article" in prompt
+    assert "sole support for a specific factual claim" in prompt
+    assert prompt.index('access_level: "summary_only"') < prompt.index("## Execution Rules")
+
+
 def test_worker_prompt_data_citation_rule_targets_aggregator_roles() -> None:
     """The rule must explicitly address synthesis / aggregator agents
     that lack data tools, since those were the worst-case path in #106

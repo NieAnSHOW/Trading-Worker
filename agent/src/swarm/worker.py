@@ -264,7 +264,11 @@ def build_worker_prompt(
         "This rule applies equally to synthesis / aggregator / editor roles "
         "that lack data tools. If upstream did not provide a specific number, "
         "do NOT introduce one from training data — say the upstream omitted "
-        "it and proceed without."
+        "it and proceed without.\n"
+        "\nWhen a `read_url` tool result has `access_level: \"summary_only\"`, "
+        "the original source denied access and the result contains search-result summaries, not article text. "
+        "You must not claim to have read the original article or use a single snippet as the sole support "
+        "for a specific factual claim; corroborate it with an accessible source or state the uncertainty.\n"
     )
 
     shell_available = include_shell_tools and "bash" in (agent_spec.tools or [])

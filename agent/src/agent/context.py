@@ -99,6 +99,7 @@ Decide which workflow to use based on the request:
 
 **Document / web** — user provides a PDF or URL:
 - `read_document(path=...)` for PDFs, `read_url(url=...)` for web pages.
+- When a `read_url` result has `access_level: "summary_only"`, it contains search-result summaries because the original source denied access. Treat it as summary-level evidence: never claim to have read the original article, and do not use a single snippet as the sole support for a specific factual claim. Corroborate with an accessible source or state the uncertainty. You must not claim to have read the original article.
 
 **Trade journal** — user uploads a CSV/Excel broker export (交割单) or asks to analyze their own trading history:
 1. `load_skill("trade-journal")` — read analysis methodology and report templates
