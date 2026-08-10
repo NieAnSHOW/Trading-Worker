@@ -6,7 +6,7 @@ import copy
 import json
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Collection, Dict, List, Optional
 
 from src.agent.memory import WorkspaceMemory
 from src.agent.skills import SkillsLoader
@@ -165,7 +165,8 @@ class ContextBuilder:
 
     def __init__(self, registry: ToolRegistry, memory: WorkspaceMemory,
                  skills_loader: Optional[SkillsLoader] = None,
-                 persistent_memory: Optional[PersistentMemory] = None) -> None:
+                 persistent_memory: Optional[PersistentMemory] = None,
+                 allowed_tool_names: Optional[Collection[str]] = None) -> None:
         """Initialize ContextBuilder.
 
         Args:
@@ -173,11 +174,19 @@ class ContextBuilder:
             memory: Workspace memory.
             skills_loader: Skills loader (auto-created if not provided).
             persistent_memory: PersistentMemory instance for cross-session recall.
+            allowed_tool_names: When provided, ``_format_tool_descriptions``
+                renders ONLY these tools (narrows what the model sees). The
+                full registry stays available to the gateway, which enforces
+                the real allowlist. ``None`` (default) preserves existing
+                behavior — all registered tools are rendered.
         """
         self.registry = registry
         self.memory = memory
         self.skills_loader = skills_loader or SkillsLoader()
         self._persistent_memory = persistent_memory
+        self._allowed_tool_names = (
+            frozenset(allowed_tool_names) if allowed_tool_names is not None else None
+        )
 
     def build_system_prompt(self, user_message: str = "") -> str:
         """Build system prompt.
@@ -200,11 +209,25 @@ class ContextBuilder:
                 snapshot=self._persistent_memory.snapshot,
             )
 
+        # ponytail: when allowed_tool_names is set, narrow both the rendered
+        # descriptions and the reported tool_count to the allowlist, so the
+        # model sees a coherent "you have N tools" with exactly N descriptions.
+        # The registry itself is never mutated — the gateway still sees all tools.
+        if self._allowed_tool_names is not None:
+            visible_tools = [
+                t for n, t in self.registry._tools.items()
+                if n in self._allowed_tool_names
+            ]
+            tool_count = len(visible_tools)
+        else:
+            visible_tools = list(self.registry._tools.values())
+            tool_count = len(self.registry._tools)
+
         return _SYSTEM_PROMPT.format(
-            tool_count=len(self.registry._tools),
+            tool_count=tool_count,
             skill_count=len(self.skills_loader.skills),
             data_source_count=self._count_data_sources(),
-            tool_descriptions=self._format_tool_descriptions(),
+            tool_descriptions=self._format_tool_descriptions(visible_tools),
             skill_descriptions=self.skills_loader.get_descriptions(),
             memory_summary=self.memory.to_summary(),
             memory_section=memory_section,
@@ -265,10 +288,24 @@ class ContextBuilder:
         messages.append({"role": "user", "content": enriched})
         return messages
 
-    def _format_tool_descriptions(self) -> str:
-        """Format tool descriptions."""
+    def _format_tool_descriptions(self, tools: Optional[List[Any]] = None) -> str:
+        """Format tool descriptions.
+
+        Args:
+            tools: Optional iterable of tools to render. When ``None``,
+                renders all registered tools filtered by
+                ``allowed_tool_names`` (if set); otherwise renders all.
+        """
+        if tools is None:
+            if self._allowed_tool_names is not None:
+                tools = [
+                    t for n, t in self.registry._tools.items()
+                    if n in self._allowed_tool_names
+                ]
+            else:
+                tools = list(self.registry._tools.values())
         lines = []
-        for tool in self.registry._tools.values():
+        for tool in tools:
             params = tool.parameters.get("properties", {})
             required = tool.parameters.get("required", [])
             param_parts = []
