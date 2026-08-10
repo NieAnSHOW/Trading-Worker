@@ -28,10 +28,26 @@ _DEFAULT_BACKENDS = "duckduckgo, google, bing, brave, mojeek, yahoo"
 _MAX_ATTEMPTS = 3
 _BACKOFF_BASE_SECONDS = 0.8
 _HTTP_TIMEOUT_SECONDS = 10
+_HTTP_READ_CHUNK_SIZE = 64 * 1024
 
 
 class _FallbackDeadlineExceeded(Exception):
     """Raised when the reader's private summary-search budget is exhausted."""
+
+
+def _read_http_body(response: Any, deadline: float | None) -> bytes:
+    """Read an HTTP body in bounded chunks when the private deadline is active."""
+    if deadline is None:
+        return response.read()
+
+    body = bytearray()
+    while True:
+        if deadline - time.monotonic() <= 0:
+            raise _FallbackDeadlineExceeded
+        chunk = response.read(_HTTP_READ_CHUNK_SIZE)
+        if not chunk:
+            return bytes(body)
+        body.extend(chunk)
 
 
 def _bounded_http_timeout(deadline: float | None) -> float:
@@ -88,7 +104,7 @@ def _aliyun_iqs_search(
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
     )
     resp = urllib.request.urlopen(req, timeout=_bounded_http_timeout(deadline))
-    data = _json.loads(resp.read().decode("utf-8"))
+    data = _json.loads(_read_http_body(resp, deadline).decode("utf-8"))
     out: list[dict] = []
     for item in data.get("pageItems", [])[:max_results]:
         out.append({
@@ -120,7 +136,9 @@ def _bing_cn_search(
     req = urllib.request.Request(
         url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     )
-    html = urllib.request.urlopen(req, timeout=_bounded_http_timeout(deadline)).read().decode("utf-8", "ignore")
+    html = _read_http_body(
+        urllib.request.urlopen(req, timeout=_bounded_http_timeout(deadline)), deadline
+    ).decode("utf-8", "ignore")
     blocks = _re.findall(r'<li class="b_algo"[^>]*>(.*?)</li>', html, _re.S)
     out: list[dict] = []
     for b in blocks[:max_results]:
@@ -161,7 +179,9 @@ def _sogou_search(
     req = urllib.request.Request(
         url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     )
-    html = urllib.request.urlopen(req, timeout=_bounded_http_timeout(deadline)).read().decode("utf-8", "ignore")
+    html = _read_http_body(
+        urllib.request.urlopen(req, timeout=_bounded_http_timeout(deadline)), deadline
+    ).decode("utf-8", "ignore")
     blocks = _re.split(r'<div class="vrwrap"', html)[1:]
     out: list[dict] = []
     for b in blocks[:max_results]:
@@ -199,7 +219,9 @@ def _qihu_search(
     req = urllib.request.Request(
         url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     )
-    html = urllib.request.urlopen(req, timeout=_bounded_http_timeout(deadline)).read().decode("utf-8", "ignore")
+    html = _read_http_body(
+        urllib.request.urlopen(req, timeout=_bounded_http_timeout(deadline)), deadline
+    ).decode("utf-8", "ignore")
     pairs = _re.findall(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html, _re.S)
     out: list[dict] = []
     for href, inner in pairs:

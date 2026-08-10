@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import urllib.request
 
 import pytest
 
@@ -199,6 +200,39 @@ def test_restricted_fallback_forwards_deadline_to_cn_search(captured, monkeypatc
 
     assert payload["status"] == "ok"
     assert calls == [("blocked article site:example.com", 5, 105.0)]
+
+
+def test_delegated_cn_body_read_stops_when_deadline_expires(captured, monkeypatch, caplog):
+    captured["resp"] = _Resp(403, "blocked")
+    monkeypatch.delenv("ALIYUN_IQS_API_KEY", raising=False)
+    monkeypatch.delenv("VIBE_TRADING_SEARCH_BACKENDS", raising=False)
+    monkeypatch.setenv("VIBE_TRADING_SEARCH_BING_FALLBACK", "1")
+
+    class FakeResponse:
+        def __init__(self):
+            self.read_sizes = []
+
+        def read(self, size=-1):
+            self.read_sizes.append(size)
+            if len(self.read_sizes) == 1:
+                return b"canary body chunk"
+            raise AssertionError("deadline-aware reader made an extra body read")
+
+    response = FakeResponse()
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_args, **_kwargs: response)
+    clock = iter((100.0, 100.0, 100.0, 100.0, 106.0))
+    monkeypatch.setattr(ws.time, "monotonic", lambda: next(clock))
+
+    with caplog.at_level(logging.WARNING, logger=ws.logger.name):
+        payload = json.loads(
+            ws.WebSearchTool().execute(
+                query="blocked article", _deadline=105.0, _safe_failure_logging=True
+            )
+        )
+
+    assert payload == {"status": "error", "error": "Web search fallback deadline exhausted."}
+    assert response.read_sizes == [ws._HTTP_READ_CHUNK_SIZE]
+    assert "canary" not in caplog.text
 
 
 def test_summary_content_excludes_query_and_fragment_but_keeps_traceability(captured, monkeypatch):
