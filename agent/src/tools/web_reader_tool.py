@@ -5,7 +5,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import requests
 from urllib3.util import Timeout as _HTTPTimeout
@@ -13,6 +13,7 @@ from urllib3.util import Timeout as _HTTPTimeout
 from src.agent.progress import emit_progress
 from src.agent.tools import BaseTool
 from src.security.scanner import with_security_warnings
+from src.tools.web_search_tool import WebSearchTool
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,18 @@ _READ_TIMEOUT = 25
 _TOTAL_TIMEOUT = 30
 _MAX_LENGTH = 8000
 _CACHED_MARKER = "Warning: This is a cached snapshot"
+_ACCESS_RESTRICTED_STATUS_CODES = frozenset({401, 403, 429, 451})
+_ACCESS_RESTRICTED_MARKERS = (
+    "abusealleviationerror",
+    "access denied",
+    "access is denied",
+    "automated access",
+    "bot detection",
+    "bot challenge",
+    "captcha",
+)
+_FALLBACK_MAX_RESULTS = 5
+_FALLBACK_QUERY_MAX_LENGTH = 240
 
 
 def _url_allowed(url: str) -> tuple[bool, str]:
@@ -59,6 +72,98 @@ def _url_allowed(url: str) -> tuple[bool, str]:
     ):
         return False, "target URL is not allowed"
     return True, ""
+
+
+def _is_source_access_restricted(status_code: int, body: str) -> bool:
+    """Return whether Jina reports a source access restriction."""
+    if status_code in _ACCESS_RESTRICTED_STATUS_CODES:
+        return True
+    lowered = body.lower()
+    return any(marker in lowered for marker in _ACCESS_RESTRICTED_MARKERS)
+
+
+def _fallback_query(target_url: str) -> str:
+    """Build a bounded site-scoped query without private URL components."""
+    parsed = urlsplit(target_url)
+    path_terms = [
+        unquote(part).replace("-", " ").replace("_", " ")
+        for part in parsed.path.split("/")
+        if part and any(char.isalpha() for char in part)
+    ]
+    terms = " ".join(path_terms).strip()
+    query = f"{terms} site:{parsed.hostname or ''}".strip()
+    return query[:_FALLBACK_QUERY_MAX_LENGTH].rstrip()
+
+
+def _summary_content(source_url: str, results: list[dict]) -> str:
+    """Render search snippets as clearly labelled non-article evidence."""
+    lines = [
+        "Source access was denied. The following are search-result summaries, not article text.",
+        f"Original URL: {source_url}",
+        "",
+    ]
+    for index, result in enumerate(results, start=1):
+        title = str(result.get("title", "")).strip()
+        result_url = str(result.get("url", "")).strip()
+        snippet = str(result.get("snippet", "")).strip()
+        lines.append(f"{index}. {title}".rstrip())
+        if result_url:
+            lines.append(f"   {result_url}")
+        if snippet:
+            lines.append(f"   {snippet}")
+    return "\n".join(lines).strip()
+
+
+def _search_fallback(target_url: str, status_code: int) -> tuple[dict[str, object] | None, str]:
+    """Return a summary-only envelope or a safe, specific failure reason."""
+    query = _fallback_query(target_url)
+    try:
+        raw_payload = WebSearchTool().execute(query=query, max_results=_FALLBACK_MAX_RESULTS)
+        payload = json.loads(raw_payload)
+    except Exception as exc:  # noqa: BLE001 - preserve source-access classification
+        logger.warning("read_url summary fallback failed: %s", exc)
+        return None, "summary search failed"
+
+    if not isinstance(payload, dict):
+        return None, "summary search failed"
+    if payload.get("status") != "ok":
+        error = str(payload.get("error", "search unavailable")).strip() or "search unavailable"
+        return None, f"summary search failed: {error}"
+    results = payload.get("results")
+    if not isinstance(results, list) or not results:
+        return None, "summary search returned no results"
+
+    safe_results = [
+        {
+            "title": str(result.get("title", "")),
+            "url": str(result.get("url", "")),
+            "snippet": str(result.get("snippet", "")),
+        }
+        for result in results[:_FALLBACK_MAX_RESULTS]
+        if isinstance(result, dict)
+    ]
+    if not safe_results:
+        return None, "summary search returned no results"
+
+    result = {
+        "status": "ok",
+        "access_level": "summary_only",
+        "source_url": target_url,
+        "url": target_url,
+        "title": "",
+        "content": _summary_content(target_url, safe_results),
+        "fallback": {
+            "reason": "source_access_denied",
+            "upstream_status": status_code,
+            "query": query,
+            "backends": str(payload.get("backends", "")),
+            "results": safe_results,
+        },
+    }
+    return with_security_warnings(
+        result,
+        fields=("content", "fallback.results.*.title", "fallback.results.*.snippet"),
+    ), ""
 
 
 def read_url(url: str, no_cache: bool = False) -> str:
@@ -104,7 +209,27 @@ def read_url(url: str, no_cache: bool = False) -> str:
         )
         emit_progress("parsing", message="extracting markdown")
         if resp.status_code != 200:
-            logger.warning("read_url upstream HTTP %s: %s", resp.status_code, resp.text[:500])
+            restricted = _is_source_access_restricted(resp.status_code, resp.text)
+            logger.warning(
+                "read_url upstream HTTP %s (source_access_restricted=%s)",
+                resp.status_code,
+                restricted,
+            )
+            if restricted:
+                fallback, fallback_reason = _search_fallback(target_url, resp.status_code)
+                if fallback is not None:
+                    return json.dumps(fallback, ensure_ascii=False)
+                return json.dumps(
+                    {
+                        "status": "error",
+                        "error_code": "source_access_denied",
+                        "error": f"source access denied and {fallback_reason}",
+                        "source_url": target_url,
+                        "upstream_status": resp.status_code,
+                        "suggested_query": _fallback_query(target_url),
+                    },
+                    ensure_ascii=False,
+                )
             return json.dumps({
                 "status": "error",
                 "error": f"remote reader returned HTTP {resp.status_code}: {resp.text[:500]}",

@@ -42,10 +42,10 @@ def captured(monkeypatch):
 
 
 def test_http_error_surfaces_status_and_body(captured):
-    captured["resp"] = _Resp(451, "ParamValidationError: bad input")
+    captured["resp"] = _Resp(500, "ParamValidationError: bad input")
     out = json.loads(read_url(URL))
     assert out["status"] == "error"
-    assert "451" in out["error"]
+    assert "500" in out["error"]
     assert "ParamValidationError: bad input" in out["error"]
 
 
@@ -88,3 +88,127 @@ def test_reader_uses_bounded_connect_and_read_timeouts(captured):
     assert timeout.connect_timeout == 5
     assert timeout.read_timeout == 25
     assert timeout.total == 30
+
+
+def _search_ok(self, query: str, max_results: int = 5) -> str:
+    assert max_results == 5
+    return json.dumps(
+        {
+            "status": "ok",
+            "query": query,
+            "backends": "qihu_fallback",
+            "results": [
+                {
+                    "title": "Dollar outlook after Fed policy meeting",
+                    "url": "https://example.com/coverage",
+                    "snippet": "Analysts expect higher-for-longer rates.",
+                }
+            ],
+        }
+    )
+
+
+def test_jina_abuse_restriction_returns_search_summary(captured, monkeypatch):
+    captured["resp"] = _Resp(403, "AbuseAlleviationError: blocked")
+    monkeypatch.setattr(wr.WebSearchTool, "execute", _search_ok)
+    url = "https://www.reuters.com/world/africa/dollar-outlook-2026-05-27/?tracking=secret#section"
+
+    payload = json.loads(wr.read_url(url))
+
+    assert payload["status"] == "ok"
+    assert payload["access_level"] == "summary_only"
+    assert payload["url"] == url
+    assert payload["source_url"] == url
+    assert payload["fallback"]["reason"] == "source_access_denied"
+    assert payload["fallback"]["upstream_status"] == 403
+    assert payload["fallback"]["backends"] == "qihu_fallback"
+    assert payload["fallback"]["results"][0]["url"] == "https://example.com/coverage"
+    assert "search-result summaries, not article text" in payload["content"]
+    assert "AbuseAlleviationError" not in payload["content"]
+    assert "tracking" not in payload["fallback"]["query"]
+    assert "secret" not in payload["fallback"]["query"]
+    assert "#section" not in payload["fallback"]["query"]
+    assert "site:www.reuters.com" in payload["fallback"]["query"]
+
+
+@pytest.mark.parametrize("status_code", [429, 451])
+def test_access_restriction_statuses_return_search_summary(captured, monkeypatch, status_code):
+    captured["resp"] = _Resp(status_code, "blocked")
+    calls = []
+
+    def search(self, **kwargs):
+        calls.append(kwargs)
+        return _search_ok(self, **kwargs)
+
+    monkeypatch.setattr(wr.WebSearchTool, "execute", search)
+
+    payload = json.loads(wr.read_url(URL))
+
+    assert len(calls) == 1
+    assert payload["access_level"] == "summary_only"
+    assert payload["fallback"]["upstream_status"] == status_code
+
+
+def test_fallback_search_error_returns_stable_access_denied_error(captured, monkeypatch):
+    captured["resp"] = _Resp(403, "blocked")
+    monkeypatch.setattr(
+        wr.WebSearchTool,
+        "execute",
+        lambda self, **kwargs: json.dumps({"status": "error", "error": "search unavailable"}),
+    )
+    url = "https://example.com/blocked/article"
+
+    payload = json.loads(wr.read_url(url))
+
+    assert payload == {
+        "status": "error",
+        "error_code": "source_access_denied",
+        "error": "source access denied and summary search failed: search unavailable",
+        "source_url": url,
+        "upstream_status": 403,
+        "suggested_query": "blocked article site:example.com",
+    }
+
+
+def test_empty_fallback_search_returns_stable_access_denied_error(captured, monkeypatch):
+    captured["resp"] = _Resp(403, "blocked")
+    monkeypatch.setattr(
+        wr.WebSearchTool,
+        "execute",
+        lambda self, **kwargs: json.dumps({"status": "ok", "results": []}),
+    )
+
+    payload = json.loads(wr.read_url("https://example.com/blocked/article"))
+
+    assert payload["status"] == "error"
+    assert payload["error_code"] == "source_access_denied"
+    assert payload["error"] == "source access denied and summary search returned no results"
+
+
+def test_non_eligible_http_failure_does_not_search(captured, monkeypatch):
+    captured["resp"] = _Resp(500, "server error")
+
+    def fail_search(*args, **kwargs):
+        raise AssertionError("restricted-source fallback should not run")
+
+    monkeypatch.setattr(wr.WebSearchTool, "execute", fail_search)
+
+    payload = json.loads(wr.read_url(URL))
+
+    assert payload["error"] == "remote reader returned HTTP 500: server error"
+
+
+def test_full_content_response_does_not_search(captured, monkeypatch):
+    captured["resp"] = _Resp(200, "Title: X\n\nfull article content")
+
+    def fail_search(*args, **kwargs):
+        raise AssertionError("successful reader response should not search")
+
+    monkeypatch.setattr(wr.WebSearchTool, "execute", fail_search)
+
+    payload = json.loads(wr.read_url(URL))
+
+    assert payload["status"] == "ok"
+    assert "access_level" not in payload
+    assert "source_url" not in payload
+    assert "fallback" not in payload
