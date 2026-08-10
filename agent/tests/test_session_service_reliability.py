@@ -238,6 +238,35 @@ def test_enforce_forwards_session_event_run_dir_shell_policy(monkeypatch, tmp_pa
     assert str(tmp_path / "runs") in str(result["run_dir"])
 
 
+def test_enforce_forwards_agentloop_run_dir(monkeypatch, tmp_path: Path) -> None:
+    """The enforce runtime must grade INSIDE the AgentLoop's run_dir.
+
+    The AgentLoop has already written artifacts (requests, traces, llm_usage)
+    into its run_dir; the runtime must reuse that directory so downstream
+    run-artifact consumers (metrics loading etc.) resolve. A fresh empty
+    ``rel-<ts>-<uuid>`` directory would silently orphan the run's artifacts.
+    """
+    monkeypatch.setenv("VIBE_RELIABILITY_RUNTIME", "enforce")
+    agent_run_dir = tmp_path / "agentloop-run"
+    agent_run_dir.mkdir(parents=True, exist_ok=True)
+    _FakeAgentLoop.constructed.clear()
+    _FakeAgentLoop.scripted = {
+        "status": "success",
+        "content": "ok",
+        "run_dir": str(agent_run_dir),
+    }
+    _apply_common_patches(monkeypatch)
+
+    service = _make_service(tmp_path)
+    attempt = Attempt(session_id="s1", prompt="get AAPL price")
+
+    result = asyncio.run(service._run_with_agent(attempt, messages=[], session_config={}))
+
+    assert result["run_dir"] == str(agent_run_dir), (
+        f"enforce must reuse the AgentLoop run_dir, got {result['run_dir']}"
+    )
+
+
 def test_enforce_events_carry_same_attempt_id(monkeypatch, tmp_path: Path) -> None:
     """All SSE events under enforce (lifecycle + runtime) carry the SAME attempt_id."""
     monkeypatch.setenv("VIBE_RELIABILITY_RUNTIME", "enforce")

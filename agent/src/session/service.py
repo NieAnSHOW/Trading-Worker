@@ -460,6 +460,10 @@ class SessionService:
 
         runtime = ReliabilityRuntime(
             runs_dir=self.runs_dir,
+            # Reuse the AgentLoop's run_dir so runtime grading lands next to the
+            # artifacts the loop already wrote (trace, llm_usage, metrics); a
+            # fresh empty dir would orphan downstream run-artifact consumers.
+            run_dir=Path(agentloop_result["run_dir"]) if agentloop_result.get("run_dir") else None,
             allow_side_effects=False,  # fast-path rollout: writes blocked
             cancel_event=cancel_event,
         )
