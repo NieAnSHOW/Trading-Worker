@@ -1,0 +1,200 @@
+{
+  "_comment": "Deterministic reliability-runtime replay cases. Each case is driven through ReliabilityRuntime.run() with fake provider/LLM outcomes injected via the gateway/executor seams. No network. The setup block tells the replay runner how to wire the route, plan step, gateway outcomes, and executor synthesis; the faults block (per the brief's format) names the provider/error_code pairs the case exercises.",
+  "cases": [
+    {
+      "name": "wrong_tool_prevention",
+      "prompt": "Place a market buy for AAPL",
+      "expected_intent": "general_research",
+      "expected_status": "failed",
+      "faults": [{"provider": "primary", "error_code": "unsafe_side_effect"}],
+      "required_evidence": [],
+      "setup": {
+        "route_capabilities": ["general_research", "symbol", "backtest"],
+        "route_allowed_tools": [],
+        "step_capability": "backtest",
+        "step_tool": "trading_place_order",
+        "step_side_effecting": true,
+        "allow_side_effects": false
+      },
+      "synthesis": {"content": "Unable to place order", "claims": []}
+    },
+    {
+      "name": "invalid_symbol",
+      "prompt": "Get quote for $$$",
+      "expected_intent": "market_data",
+      "expected_status": "failed",
+      "faults": [{"provider": "primary", "error_code": "invalid_argument"}],
+      "required_evidence": [],
+      "setup": {
+        "route_capabilities": ["market_data", "symbol"],
+        "route_allowed_tools": ["get_market_data"],
+        "step_capability": "market_data",
+        "step_tool": "get_market_data",
+        "step_side_effecting": false,
+        "retry_limit": 0
+      },
+      "synthesis": {"content": "Symbol could not be resolved", "claims": []}
+    },
+    {
+      "name": "bad_date",
+      "prompt": "Get AAPL data for 2025-99-99",
+      "expected_intent": "market_data",
+      "expected_status": "failed",
+      "faults": [{"provider": "primary", "error_code": "invalid_argument"}],
+      "required_evidence": [],
+      "setup": {
+        "route_capabilities": ["market_data"],
+        "route_allowed_tools": ["get_market_data"],
+        "step_capability": "market_data",
+        "step_tool": "get_market_data",
+        "step_side_effecting": false,
+        "retry_limit": 0
+      },
+      "synthesis": {"content": "Date is not valid", "claims": []}
+    },
+    {
+      "name": "provider_timeout_no_fallback",
+      "prompt": "Get AAPL daily data for the last 20 sessions",
+      "expected_intent": "market_data",
+      "expected_status": "failed",
+      "faults": [{"provider": "primary", "error_code": "provider_timeout"}],
+      "required_evidence": [],
+      "setup": {
+        "route_capabilities": ["market_data"],
+        "route_allowed_tools": ["get_market_data"],
+        "step_capability": "market_data",
+        "step_tool": "get_market_data",
+        "step_side_effecting": false,
+        "retry_limit": 0
+      },
+      "synthesis": {"content": "Provider timed out", "claims": []}
+    },
+    {
+      "name": "empty_provider_response",
+      "prompt": "Get quote for AAPL",
+      "expected_intent": "market_data",
+      "expected_status": "failed",
+      "faults": [{"provider": "primary", "error_code": "data_unavailable"}],
+      "required_evidence": [],
+      "setup": {
+        "route_capabilities": ["market_data"],
+        "route_allowed_tools": ["get_market_data"],
+        "step_capability": "market_data",
+        "step_tool": "get_market_data",
+        "step_side_effecting": false,
+        "retry_limit": 0
+      },
+      "synthesis": {"content": "No data returned", "claims": []}
+    },
+    {
+      "name": "partial_financial_statement",
+      "prompt": "Get AAPL financial statements",
+      "expected_intent": "fundamentals",
+      "expected_status": "partial",
+      "faults": [],
+      "required_evidence": ["fundamentals"],
+      "setup": {
+        "route_capabilities": ["fundamentals"],
+        "route_allowed_tools": ["get_fundamentals"],
+        "step_capability": "fundamentals",
+        "step_tool": "get_fundamentals",
+        "step_side_effecting": false,
+        "outcome": "success_no_evidence"
+      },
+      "synthesis": {"content": "Partial financials available", "claims": []}
+    },
+    {
+      "name": "budget_exhaustion",
+      "prompt": "Get AAPL quote",
+      "expected_intent": "market_data",
+      "expected_status": "failed",
+      "faults": [{"provider": "primary", "error_code": "provider_timeout"}],
+      "required_evidence": [],
+      "setup": {
+        "route_capabilities": ["market_data"],
+        "route_allowed_tools": ["get_market_data"],
+        "step_capability": "market_data",
+        "step_tool": "get_market_data",
+        "step_side_effecting": false,
+        "retry_limit": 5,
+        "step_budget": 2
+      },
+      "synthesis": {"content": "Budget exhausted", "claims": []}
+    },
+    {
+      "name": "malformed_backtest_metrics",
+      "prompt": "Run a quick AAPL backtest and show Sharpe",
+      "expected_intent": "backtest",
+      "expected_status": "failed",
+      "faults": [{"provider": "primary", "error_code": "schema_mismatch"}],
+      "required_evidence": ["backtest"],
+      "setup": {
+        "route_capabilities": ["backtest"],
+        "route_allowed_tools": ["backtest"],
+        "step_capability": "backtest",
+        "step_tool": "backtest",
+        "step_side_effecting": true,
+        "allow_side_effects": true,
+        "outcome": "malformed_metric"
+      },
+      "synthesis": {"content": "Backtest ran but metrics malformed", "claims": []}
+    },
+    {
+      "name": "unsupported_claim",
+      "prompt": "Should I buy AAPL today?",
+      "expected_intent": "general_research",
+      "expected_status": "partial",
+      "faults": [],
+      "required_evidence": [],
+      "setup": {
+        "route_capabilities": ["general_research", "symbol"],
+        "route_allowed_tools": ["search_symbol"],
+        "step_capability": "general_research",
+        "step_tool": "search_symbol",
+        "step_side_effecting": false,
+        "outcome": "success_no_evidence"
+      },
+      "synthesis": {
+        "content": "AAPL is a strong buy targeting 250",
+        "claims": [
+          {"text": "AAPL targets 250", "kind": "interpretation", "evidence": []}
+        ]
+      }
+    },
+    {
+      "name": "cancellation",
+      "prompt": "Get AAPL quote",
+      "expected_intent": "market_data",
+      "expected_status": "cancelled",
+      "faults": [{"provider": "primary", "error_code": "cancelled"}],
+      "required_evidence": [],
+      "setup": {
+        "route_capabilities": ["market_data"],
+        "route_allowed_tools": ["get_market_data"],
+        "step_capability": "market_data",
+        "step_tool": "get_market_data",
+        "step_side_effecting": false,
+        "outcome": "cancelled"
+      },
+      "synthesis": {"content": "Cancelled", "claims": []}
+    },
+    {
+      "name": "side_effect_no_retry",
+      "prompt": "Run AAPL backtest",
+      "expected_intent": "backtest",
+      "expected_status": "failed",
+      "faults": [{"provider": "primary", "error_code": "provider_timeout"}],
+      "required_evidence": [],
+      "setup": {
+        "route_capabilities": ["backtest"],
+        "route_allowed_tools": ["backtest"],
+        "step_capability": "backtest",
+        "step_tool": "backtest",
+        "step_side_effecting": true,
+        "allow_side_effects": true,
+        "retry_limit": 5
+      },
+      "synthesis": {"content": "Backtest failed", "claims": []}
+    }
+  ]
+}
