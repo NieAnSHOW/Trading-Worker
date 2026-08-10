@@ -492,7 +492,14 @@ class SessionService:
             )
         except Exception:  # noqa: BLE001 - runtime fault, not a legitimate verdict
             # allow_side_effects=False guarantees no side effect began, so
-            # falling back to the AgentLoop result is safe.
+            # falling back to the AgentLoop result is safe. Mark the fallback
+            # as un-graded: terminal status stays the AgentLoop's, but
+            # reliability.faulted tells operators no verdict was produced.
+            rel = agentloop_result.get("reliability")
+            if isinstance(rel, dict):
+                rel["faulted"] = True
+            else:
+                agentloop_result["reliability"] = {"faulted": True}
             return agentloop_result
         finally:
             self._active_cancels.pop(session_id, None)

@@ -297,6 +297,33 @@ def test_enforce_events_carry_same_attempt_id(monkeypatch, tmp_path: Path) -> No
 # ---------------------------------------------------------------------------
 
 
+def test_enforce_fault_fallback_marks_ungraded(monkeypatch, tmp_path: Path) -> None:
+    """A runtime FAULT falls back to the AgentLoop result, marked un-graded.
+
+    Terminal semantics are untouched (status stays whatever the AgentLoop
+    returned); ``reliability.faulted`` tells operators the run never got a
+    reliability verdict.
+    """
+    monkeypatch.setenv("VIBE_RELIABILITY_RUNTIME", "enforce")
+    _FakeAgentLoop.constructed.clear()
+    _FakeAgentLoop.scripted = {"status": "success", "content": "agentloop produced this"}
+    _apply_common_patches(monkeypatch)
+
+    def _boom(self: Any, **kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("simulated runtime fault")
+
+    monkeypatch.setattr("src.reliability.runtime.ReliabilityRuntime.run", _boom)
+
+    service = _make_service(tmp_path)
+    attempt = Attempt(session_id="s1", prompt="get AAPL price")
+
+    result = asyncio.run(service._run_with_agent(attempt, messages=[], session_config={}))
+
+    assert result["status"] == "success"  # terminal semantics untouched
+    assert result["content"] == "agentloop produced this"
+    assert result["reliability"]["faulted"] is True
+
+
 def test_enforce_blocks_side_effecting_tools(monkeypatch, tmp_path: Path) -> None:
     """enforce runs allow_side_effects=False: side-effecting tools are never executed.
 
