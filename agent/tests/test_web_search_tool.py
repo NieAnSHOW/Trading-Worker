@@ -1,9 +1,9 @@
 """Tests for WebSearchTool: CN-first default, opt-in overseas engines, fallback.
 
-Default behavior (no env): the CN chain (360 → sogou → cn.bing) runs directly
-and overseas ddgs engines are never contacted. Setting VIBE_TRADING_SEARCH_BACKENDS
-opts into the overseas ddgs path. All tests mock ddgs.DDGS and the CN scrapers
-so no network calls are made.
+Default behavior (no env): the CN chain (360 → Sogou → cn.bing) runs directly
+and overseas ddgs engines are never contacted. Setting
+VIBE_TRADING_SEARCH_BACKENDS opts into the overseas ddgs path. All tests mock
+ddgs.DDGS and the CN scrapers so no network calls are made.
 """
 import json
 import logging
@@ -13,6 +13,7 @@ from types import ModuleType
 
 import pytest
 
+import src.tools.web_search_tool as ws
 from src.tools.web_search_tool import WebSearchTool
 
 
@@ -287,7 +288,7 @@ def test_iqs_fast_path_when_key_set(monkeypatch):
     assert calls["qihu"] == 0  # IQS hit → CN chain not contacted
 
 
-# --- _qihu_search parser unit test (no network) ---
+# --- CN backend parsers and resource cleanup (no network) ---
 
 
 def test_qihu_search_parses_html(monkeypatch):
@@ -306,12 +307,135 @@ def test_qihu_search_parses_html(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=10: _FakeResp())
 
-    from src.tools.web_search_tool import _qihu_search
-
-    out = _qihu_search("双环传动", max_results=5)
+    out = ws._qihu_search("双环传动", max_results=5)
     titles = [r["title"] for r in out]
 
     assert "双环传动[002472]股票行情_九方智投" in titles
     assert all(r["href"].startswith("https://") for r in out)
     assert all("搜索" not in r["title"] for r in out)  # navigation words filtered
     assert len(out) == 3  # 3 valid results (excluded: 搜索帮助 nav, 短 too short)
+
+
+class _FakeSocket:
+    def __init__(self):
+        self.timeouts = []
+
+    def settimeout(self, timeout):
+        self.timeouts.append(timeout)
+
+
+class _FakeResponse:
+    def __init__(self, body, *, read_error=None):
+        self._body = body
+        self._sock = _FakeSocket()
+        self.closed = False
+        self.read_error = read_error
+
+    def read(self, _size=-1):
+        if self.read_error is not None:
+            raise self.read_error
+        body, self._body = self._body, b""
+        return body
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.mark.parametrize(
+    ("search", "body"),
+    [
+        (ws._bing_cn_search, b'<li class="b_algo"><h2><a href="https://example.com">Result title</a></h2></li>'),
+        (ws._sogou_search, b'<div class="vrwrap"><a target="_blank">Result title</a><a href="/link?x"></a>'),
+        (ws._qihu_search, b'<a href="https://example.com">Result title</a>'),
+    ],
+)
+def test_delegated_cn_backends_close_response_after_success(monkeypatch, search, body):
+    response = _FakeResponse(body)
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: response)
+
+    monkeypatch.setattr(ws.time, "monotonic", lambda: 100.0)
+
+    assert search("query", deadline=200.0)
+    assert response.closed is True
+    assert response._sock.timeouts == [100.0, 100.0]
+
+
+def test_delegated_iqs_closes_response_after_success(monkeypatch):
+    response = _FakeResponse(
+        b'{"pageItems": [{"title": "Result", "link": "https://example.com", "snippet": "Summary"}]}'
+    )
+    monkeypatch.setenv("ALIYUN_IQS_API_KEY", "test-key")
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: response)
+
+    assert ws._aliyun_iqs_search("query") == [
+        {"title": "Result", "href": "https://example.com", "body": "Summary"}
+    ]
+    assert response.closed is True
+
+
+def test_delegated_iqs_closes_response_after_parse_failure(monkeypatch):
+    response = _FakeResponse(b"not json")
+    monkeypatch.setenv("ALIYUN_IQS_API_KEY", "test-key")
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: response)
+
+    with pytest.raises(json.JSONDecodeError):
+        ws._aliyun_iqs_search("query")
+
+    assert response.closed is True
+
+
+@pytest.mark.parametrize("search", [ws._aliyun_iqs_search, ws._bing_cn_search, ws._sogou_search, ws._qihu_search])
+def test_delegated_backends_close_response_when_read_fails(monkeypatch, search):
+    response = _FakeResponse(b"", read_error=RuntimeError("read failed"))
+    if search is ws._aliyun_iqs_search:
+        monkeypatch.setenv("ALIYUN_IQS_API_KEY", "test-key")
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: response)
+
+    with pytest.raises(RuntimeError, match="read failed"):
+        search("query")
+
+    assert response.closed is True
+
+
+def test_delegated_backend_without_socket_fails_closed(monkeypatch):
+    class UncontrollableResponse:
+        closed = False
+
+        def read(self, _size=-1):
+            raise AssertionError("read must not start without a controllable socket")
+
+        def close(self):
+            self.closed = True
+
+    response = UncontrollableResponse()
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: response)
+    monkeypatch.setattr(ws.time, "monotonic", lambda: 100.0)
+
+    with pytest.raises(ws._FallbackDeadlineUnavailable):
+        ws._qihu_search("query", deadline=200.0)
+
+    assert response.closed is True
+
+
+def test_delegated_stalled_socket_read_returns_deadline_error_and_closes_response(monkeypatch, caplog):
+    class StalledResponse(_FakeResponse):
+        def read(self, _size=-1):
+            assert self._sock.timeouts == [5.0]
+            raise TimeoutError("socket read timed out")
+
+    response = StalledResponse(b"")
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: response)
+    monkeypatch.setattr(ws.time, "monotonic", lambda: 100.0)
+
+    with caplog.at_level(logging.WARNING, logger=ws.logger.name):
+        payload = json.loads(
+            WebSearchTool().execute(
+                query="blocked article",
+                _deadline=105.0,
+                _safe_failure_logging=True,
+            )
+        )
+
+    assert payload == {"status": "error", "error": "Web search fallback deadline exhausted."}
+    assert response.closed is True
+    assert "socket read timed out" not in caplog.text

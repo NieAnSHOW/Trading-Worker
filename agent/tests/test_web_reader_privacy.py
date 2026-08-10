@@ -208,15 +208,27 @@ def test_delegated_cn_body_read_stops_when_deadline_expires(captured, monkeypatc
     monkeypatch.delenv("VIBE_TRADING_SEARCH_BACKENDS", raising=False)
     monkeypatch.setenv("VIBE_TRADING_SEARCH_BING_FALLBACK", "1")
 
+    class FakeSocket:
+        def __init__(self):
+            self.timeouts = []
+
+        def settimeout(self, timeout):
+            self.timeouts.append(timeout)
+
     class FakeResponse:
         def __init__(self):
             self.read_sizes = []
+            self._sock = FakeSocket()
+            self.closed = False
 
         def read(self, size=-1):
             self.read_sizes.append(size)
             if len(self.read_sizes) == 1:
                 return b"canary body chunk"
             raise AssertionError("deadline-aware reader made an extra body read")
+
+        def close(self):
+            self.closed = True
 
     response = FakeResponse()
     monkeypatch.setattr(urllib.request, "urlopen", lambda *_args, **_kwargs: response)
@@ -232,6 +244,8 @@ def test_delegated_cn_body_read_stops_when_deadline_expires(captured, monkeypatc
 
     assert payload == {"status": "error", "error": "Web search fallback deadline exhausted."}
     assert response.read_sizes == [ws._HTTP_READ_CHUNK_SIZE]
+    assert response.closed is True
+    assert response._sock.timeouts == [5.0]
     assert "canary" not in caplog.text
 
 

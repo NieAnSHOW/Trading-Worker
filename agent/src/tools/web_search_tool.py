@@ -35,6 +35,56 @@ class _FallbackDeadlineExceeded(Exception):
     """Raised when the reader's private summary-search budget is exhausted."""
 
 
+class _FallbackDeadlineUnavailable(_FallbackDeadlineExceeded):
+    """Raised when a response cannot enforce the reader's private deadline."""
+
+
+def _response_socket(response: Any) -> Any | None:
+    """Find the socket exposed by common urllib/http.client response variants."""
+    pending = [response]
+    seen: set[int] = set()
+    while pending:
+        candidate = pending.pop(0)
+        if candidate is None or id(candidate) in seen:
+            continue
+        seen.add(id(candidate))
+        try:
+            settimeout = getattr(candidate, "settimeout", None)
+        except Exception:  # noqa: BLE001 - test doubles may expose bad properties
+            settimeout = None
+        if callable(settimeout):
+            return candidate
+        for name in ("_sock", "fp", "raw", "_fp"):
+            try:
+                nested = getattr(candidate, name, None)
+            except Exception:  # noqa: BLE001 - test doubles may expose bad properties
+                nested = None
+            if nested is not None:
+                pending.append(nested)
+    return None
+
+
+def _set_response_read_timeout(response: Any, timeout: float) -> None:
+    """Set the underlying response socket timeout, or fail closed."""
+    sock = _response_socket(response)
+    if sock is None:
+        raise _FallbackDeadlineUnavailable
+    try:
+        sock.settimeout(timeout)
+    except Exception as exc:  # noqa: BLE001 - socket implementations vary
+        raise _FallbackDeadlineUnavailable from exc
+
+
+def _close_response(response: Any) -> None:
+    """Close a urlopen response without masking the original failure."""
+    try:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+    except Exception:  # noqa: BLE001 - cleanup must not mask search outcome
+        logger.debug("web search response cleanup failed", exc_info=True)
+
+
 def _read_http_body(response: Any, deadline: float | None) -> bytes:
     """Read an HTTP body in bounded chunks when the private deadline is active."""
     if deadline is None:
@@ -42,9 +92,14 @@ def _read_http_body(response: Any, deadline: float | None) -> bytes:
 
     body = bytearray()
     while True:
-        if deadline - time.monotonic() <= 0:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             raise _FallbackDeadlineExceeded
-        chunk = response.read(_HTTP_READ_CHUNK_SIZE)
+        _set_response_read_timeout(response, remaining)
+        try:
+            chunk = response.read(_HTTP_READ_CHUNK_SIZE)
+        except TimeoutError as exc:
+            raise _FallbackDeadlineExceeded from exc
         if not chunk:
             return bytes(body)
         body.extend(chunk)
@@ -104,7 +159,10 @@ def _aliyun_iqs_search(
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
     )
     resp = urllib.request.urlopen(req, timeout=_bounded_http_timeout(deadline))
-    data = _json.loads(_read_http_body(resp, deadline).decode("utf-8"))
+    try:
+        data = _json.loads(_read_http_body(resp, deadline).decode("utf-8"))
+    finally:
+        _close_response(resp)
     out: list[dict] = []
     for item in data.get("pageItems", [])[:max_results]:
         out.append({
@@ -136,9 +194,11 @@ def _bing_cn_search(
     req = urllib.request.Request(
         url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     )
-    html = _read_http_body(
-        urllib.request.urlopen(req, timeout=_bounded_http_timeout(deadline)), deadline
-    ).decode("utf-8", "ignore")
+    resp = urllib.request.urlopen(req, timeout=_bounded_http_timeout(deadline))
+    try:
+        html = _read_http_body(resp, deadline).decode("utf-8", "ignore")
+    finally:
+        _close_response(resp)
     blocks = _re.findall(r'<li class="b_algo"[^>]*>(.*?)</li>', html, _re.S)
     out: list[dict] = []
     for b in blocks[:max_results]:
@@ -179,9 +239,11 @@ def _sogou_search(
     req = urllib.request.Request(
         url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     )
-    html = _read_http_body(
-        urllib.request.urlopen(req, timeout=_bounded_http_timeout(deadline)), deadline
-    ).decode("utf-8", "ignore")
+    resp = urllib.request.urlopen(req, timeout=_bounded_http_timeout(deadline))
+    try:
+        html = _read_http_body(resp, deadline).decode("utf-8", "ignore")
+    finally:
+        _close_response(resp)
     blocks = _re.split(r'<div class="vrwrap"', html)[1:]
     out: list[dict] = []
     for b in blocks[:max_results]:
@@ -219,9 +281,11 @@ def _qihu_search(
     req = urllib.request.Request(
         url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     )
-    html = _read_http_body(
-        urllib.request.urlopen(req, timeout=_bounded_http_timeout(deadline)), deadline
-    ).decode("utf-8", "ignore")
+    resp = urllib.request.urlopen(req, timeout=_bounded_http_timeout(deadline))
+    try:
+        html = _read_http_body(resp, deadline).decode("utf-8", "ignore")
+    finally:
+        _close_response(resp)
     pairs = _re.findall(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html, _re.S)
     out: list[dict] = []
     for href, inner in pairs:
