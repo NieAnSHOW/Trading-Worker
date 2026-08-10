@@ -64,10 +64,9 @@ def test_read_url_allows_public_http_targets(monkeypatch: pytest.MonkeyPatch) ->
     assert result["status"] == "ok"
     assert result["title"] == "Example"
     assert result["url"] == "https://example.com/docs?x=1"
-    assert calls == [
-        {
-            "url": "https://r.jina.ai/https://example.com/docs?x=1",
-            "headers": {"Accept": "text/markdown"},
-            "timeout": 30,
-        }
-    ]
+    assert calls[0]["url"] == "https://r.jina.ai/https://example.com/docs?x=1"
+    assert calls[0]["headers"] == {"Accept": "text/markdown"}
+    timeout = calls[0]["timeout"]
+    assert timeout.connect_timeout == 5
+    assert timeout.read_timeout == 25
+    assert timeout.total == 30

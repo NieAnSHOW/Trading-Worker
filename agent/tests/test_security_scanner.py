@@ -88,6 +88,15 @@ def test_web_search_adds_security_warning_to_snippets(
 
     fake_module = types.SimpleNamespace(DDGS=FakeDDGS)
     monkeypatch.setitem(sys.modules, "ddgs", fake_module)
+    monkeypatch.setenv("VIBE_TRADING_SEARCH_BACKENDS", "duckduckgo")
+    monkeypatch.delenv("ALIYUN_IQS_API_KEY", raising=False)
+
+    def fail_fallback(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("CN fallback should not be called when mocked ddgs succeeds")
+
+    monkeypatch.setattr(web_search_tool, "_qihu_search", fail_fallback)
+    monkeypatch.setattr(web_search_tool, "_sogou_search", fail_fallback)
+    monkeypatch.setattr(web_search_tool, "_bing_cn_search", fail_fallback)
 
     result = json.loads(web_search_tool.WebSearchTool().execute(query="AAPL"))
 
