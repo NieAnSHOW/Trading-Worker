@@ -3,10 +3,44 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+logger = logging.getLogger(__name__)
+
+# Operator-controlled reliability-runtime rollout switch (Task 7). Default off.
+# Read once per attempt via get_reliability_runtime_mode(); unknown values fall
+# back to ``off`` with a warning rather than crashing the attempt.
+RELIABILITY_RUNTIME_MODES: frozenset[str] = frozenset({"off", "shadow", "enforce"})
+_RELIABILITY_RUNTIME_ENV_VAR = "VIBE_RELIABILITY_RUNTIME"
+
+
+def get_reliability_runtime_mode() -> str:
+    """Return the validated reliability-runtime rollout mode.
+
+    Reads ``VIBE_RELIABILITY_RUNTIME`` from the environment. ``off`` is the
+    default (unset/empty) and means the current AgentLoop path runs untouched.
+    Unknown values fall back to ``off`` with a warning — never raises.
+
+    Returns:
+        One of ``off`` / ``shadow`` / ``enforce``.
+    """
+    raw = os.environ.get(_RELIABILITY_RUNTIME_ENV_VAR, "").strip().lower()
+    if not raw:
+        return "off"
+    if raw in RELIABILITY_RUNTIME_MODES:
+        return raw
+    logger.warning(
+        "Unknown %s=%r; falling back to off. Valid modes: %s",
+        _RELIABILITY_RUNTIME_ENV_VAR,
+        raw,
+        sorted(RELIABILITY_RUNTIME_MODES),
+    )
+    return "off"
 
 # Live-broker MCP server keys. These channels may place real orders, so a
 # wildcard ``enabled_tools`` (which would re-admit every WRITE/UNKNOWN tool) is

@@ -53,6 +53,11 @@ class PlanStep(BaseModel):
     retry_limit: int = 0
     timeout_seconds: float = 30.0
     side_effecting: bool = False
+    # Tool call arguments for this step. Populated by the service-supplied
+    # plan_provider; empty when the step's tool accepts no required fields.
+    # Task 7 handoff resolution (option a): the runtime reads step.arguments
+    # via _step_arguments so enforce mode can drive real tools with real args.
+    arguments: dict[str, object] = Field(default_factory=dict)
 
 
 class ExecutionPlan(BaseModel):

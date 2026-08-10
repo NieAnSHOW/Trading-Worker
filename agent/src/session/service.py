@@ -52,6 +52,9 @@ class SessionService:
         self.event_bus = event_bus
         self.runs_dir = runs_dir
         self._active_loops: Dict[str, "AgentLoop"] = {}
+        # ponytail: runtime cancel handles keyed by session_id. Only populated
+        # on the enforce path; off/shadow cancel via _active_loops.
+        self._active_cancels: Dict[str, Any] = {}
         self._search_index = get_shared_index()
 
     def create_session(self, title: str = "", config: Optional[Dict[str, Any]] = None) -> Session:
@@ -136,13 +139,19 @@ class SessionService:
             session_id: Session ID.
 
         Returns:
-            Whether cancellation succeeded. True means an active loop existed and received a cancel signal.
+            Whether cancellation succeeded. True means an active loop or
+            runtime cancel handle existed and received a cancel signal.
         """
+        cancelled = False
         loop = self._active_loops.get(session_id)
-        if loop is None:
-            return False
-        loop.cancel()
-        return True
+        if loop is not None:
+            loop.cancel()
+            cancelled = True
+        cancel_event = self._active_cancels.get(session_id)
+        if cancel_event is not None:
+            cancel_event.set()
+            cancelled = True
+        return cancelled
 
     async def _run_attempt(self, session: Session, attempt: Attempt, *, include_shell_tools: bool = False) -> None:
         """Execute an Attempt in the background."""
@@ -219,7 +228,21 @@ class SessionService:
         from src.agent.loop import AgentLoop
         from src.memory.persistent import PersistentMemory
         from src.config.loader import load_runtime_agent_config, sanitize_session_overrides
+        from src.config.schema import get_reliability_runtime_mode
         from src.telemetry import counters
+
+        # ponytail: branch at construction. off runs the EXACT current path
+        # below (zero reliability code on the hot path); shadow/enforce
+        # delegate to _run_with_reliability so the off path is untouched.
+        mode = get_reliability_runtime_mode()
+        if mode != "off":
+            return await self._run_with_reliability(
+                mode,
+                attempt,
+                messages=messages,
+                include_shell_tools=include_shell_tools,
+                session_config=session_config,
+            )
 
         llm = ChatLLM()
         pm = PersistentMemory()
@@ -299,6 +322,228 @@ class SessionService:
                 result["metrics"] = metrics
 
         return result
+
+    async def _run_with_reliability(
+        self,
+        mode: str,
+        attempt: Attempt,
+        *,
+        messages: list = None,
+        include_shell_tools: bool = False,
+        session_config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Run the reliability runtime alongside / over the AgentLoop.
+
+        Builds the SAME registry + AgentLoop + persistent-memory stack as the
+        off path, then:
+
+          * ``shadow`` — the AgentLoop owns the attempt; the runtime runs as an
+            observer (fast path, stub executor returning the AgentLoop's own
+            synthesis) so its route + verification decisions are recorded
+            WITHOUT duplicating provider/tool calls and WITHOUT replacing the
+            AgentLoop result.
+          * ``enforce`` — the runtime owns the attempt. Fast-path rollout wires
+            ``plan_provider=None`` (no LLM planner yet) and
+            ``allow_side_effects=False`` so the gateway blocks writes and the
+            no-fallback-after-writes invariant holds trivially. The AgentLoop
+            remains the synthesis engine; the runtime grades its output and
+            its terminal verdict is what the caller sees. A runtime FAULT
+            (unexpected exception, not a legitimate verdict) falls back to the
+            AgentLoop result — safe because allow_side_effects=False means no
+            side effect can have begun. A future task wires a real planner so
+            the runtime drives tools through the gateway itself.
+        """
+        from src.tools import build_registry
+        from src.providers.chat import ChatLLM
+        from src.agent.loop import AgentLoop
+        from src.memory.persistent import PersistentMemory
+        from src.config.loader import load_runtime_agent_config, sanitize_session_overrides
+        from src.reliability.runtime import ReliabilityRuntime
+        from src.reliability.evidence import Claim
+        from src.telemetry import counters
+
+        llm = ChatLLM()
+        pm = PersistentMemory()
+
+        session_id = attempt.session_id
+        attempt_id = attempt.attempt_id
+        loop = asyncio.get_running_loop()
+
+        safe_overrides = sanitize_session_overrides(session_config) if session_config else session_config
+        agent_config = load_runtime_agent_config(overrides=safe_overrides)
+
+        def event_callback(event_type: str, data: Dict[str, Any]) -> None:
+            """Forward AgentLoop events (incl. mandate/live relays) to SSE."""
+            data["attempt_id"] = attempt_id
+            self.event_bus.emit(session_id, event_type, data)
+
+        def runtime_event_callback(event_type: str, data: Dict[str, Any]) -> None:
+            """Forward runtime tool-lifecycle events only.
+
+            The service (_run_attempt) owns attempt.created/started/completed/
+            failed; the runtime's attempt.* emissions are dropped here to keep
+            a single source of truth and one attempt_id space.
+            """
+            if event_type.startswith("attempt."):
+                return
+            data["attempt_id"] = attempt_id
+            self.event_bus.emit(session_id, event_type, data)
+
+        def _mcp_collision_warn(msg: str) -> None:
+            self.event_bus.emit(session_id, "mcp.warning", {"attempt_id": attempt_id, "message": msg})
+
+        _reg_t0 = time.perf_counter()
+        registry = await loop.run_in_executor(
+            _AGENT_EXECUTOR,
+            lambda: build_registry(
+                persistent_memory=pm,
+                include_shell_tools=include_shell_tools,
+                agent_config=agent_config,
+                session_id=session_id,
+                event_callback=event_callback,
+                warn_callback=_mcp_collision_warn,
+            ),
+        )
+        try:  # ponytail: best-effort telemetry — failure must not affect the attempt
+            counters.record_reliability_phase("registry_build", int((time.perf_counter() - _reg_t0) * 1000))
+        except Exception:  # noqa: BLE001
+            pass
+
+        agent = AgentLoop(
+            registry=registry,
+            llm=llm,
+            event_callback=event_callback,
+            max_iterations=50,
+            persistent_memory=pm,
+        )
+        self._active_loops[session_id] = agent
+
+        history = self._convert_messages_to_history(messages) if messages else None
+
+        _loop_t0 = time.perf_counter()
+        try:
+            agentloop_result = await loop.run_in_executor(
+                _AGENT_EXECUTOR,
+                lambda: agent.run(
+                    user_message=attempt.prompt,
+                    history=history,
+                    session_id=session_id,
+                ),
+            )
+        finally:
+            try:
+                counters.record_reliability_phase("agent_loop", int((time.perf_counter() - _loop_t0) * 1000))
+            except Exception:  # noqa: BLE001
+                pass
+            # AgentLoop done; enforce will register its own cancel handle below.
+            self._active_loops.pop(session_id, None)
+
+        synthesis = self._coerce_synthesis(agentloop_result, Claim)
+
+        if mode == "shadow":
+            # Observer: record reliability decisions; do not replace the result.
+            shadow_summary = self._observe_reliability(
+                registry=registry,
+                user_message=attempt.prompt,
+                session_id=session_id,
+                synthesis=synthesis,
+                agentloop_result=agentloop_result,
+            )
+            agentloop_result["reliability"] = shadow_summary
+            return agentloop_result
+
+        # enforce: runtime owns the attempt.
+        import threading
+
+        cancel_event = threading.Event()
+        self._active_cancels[session_id] = cancel_event
+
+        runtime = ReliabilityRuntime(
+            runs_dir=self.runs_dir,
+            allow_side_effects=False,  # fast-path rollout: writes blocked
+            cancel_event=cancel_event,
+        )
+
+        def executor(*, user_message: str, session_id: str, route, evidence, run_dir: str) -> Dict[str, Any]:
+            """Fast-path rollout: synthesis reuses the AgentLoop output.
+
+            The runtime's plan_provider is None (no LLM planner wired yet), so
+            the fast path calls the executor once for synthesis. Reusing the
+            AgentLoop result avoids a duplicate LLM/provider call. A future
+            task swaps in a dedicated synthesizer + planner.
+            """
+            del user_message, session_id, route, evidence, run_dir  # synthesis already computed
+            return synthesis
+
+        try:
+            result = await loop.run_in_executor(
+                _AGENT_EXECUTOR,
+                lambda: runtime.run(
+                    user_message=attempt.prompt,
+                    session_id=session_id,
+                    registry=registry,
+                    executor=executor,
+                    event_callback=runtime_event_callback,
+                ),
+            )
+        except Exception:  # noqa: BLE001 - runtime fault, not a legitimate verdict
+            # allow_side_effects=False guarantees no side effect began, so
+            # falling back to the AgentLoop result is safe.
+            return agentloop_result
+        finally:
+            self._active_cancels.pop(session_id, None)
+
+        if result.get("run_dir"):
+            metrics = self._load_metrics(Path(result["run_dir"]))
+            if metrics:
+                result["metrics"] = metrics
+        return result
+
+    @staticmethod
+    def _coerce_synthesis(agentloop_result: Dict[str, Any], claim_cls) -> Dict[str, Any]:
+        """Shape an AgentLoop result as a runtime synthesis dict."""
+        synth: Dict[str, Any] = {
+            "content": str(agentloop_result.get("content", "")),
+            "claims": [c for c in (agentloop_result.get("claims") or []) if isinstance(c, claim_cls)],
+        }
+        for key in ("usage", "prompt_tokens", "completion_tokens", "total_tokens"):
+            if key in agentloop_result:
+                synth[key] = agentloop_result[key]
+        return synth
+
+    def _observe_reliability(
+        self,
+        *,
+        registry: Any,
+        user_message: str,
+        session_id: str,
+        synthesis: Dict[str, Any],
+        agentloop_result: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Run the runtime as a silent observer and return its redacted summary.
+
+        The stub executor returns the AgentLoop's own synthesis so no
+        provider/tool call is duplicated. The runtime's event callback is
+        silenced (shadow records, it does not emit).
+        """
+        from src.reliability.runtime import ReliabilityRuntime
+
+        runtime = ReliabilityRuntime(runs_dir=self.runs_dir, allow_side_effects=False)
+
+        def stub_executor(**_kwargs: Any) -> Dict[str, Any]:
+            return synthesis
+
+        try:
+            observed = runtime.run(
+                user_message=user_message,
+                session_id=session_id,
+                registry=registry,
+                executor=stub_executor,
+                event_callback=lambda _et, _data: None,
+            )
+        except Exception:  # noqa: BLE001 - observer must never break the attempt
+            return {}
+        return dict(observed.get("reliability") or {})  # type: ignore[arg-type]
 
     @staticmethod
     def _convert_messages_to_history(messages: list) -> list[Dict[str, Any]]:

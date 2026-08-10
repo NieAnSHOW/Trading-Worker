@@ -70,3 +70,31 @@ def test_run_with_agent_keeps_event_loop_responsive_during_registry_build(
     assert result["status"] == "completed"
     assert tick_times, "Expected the event loop ticker to run while registry build was pending"
     assert tick_times[0] < 0.18, f"Registry build blocked the event loop for too long: {tick_times[0]:.3f}s"
+
+
+def test_off_default_runs_agentloop_without_reliability_summary(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Task 7 regression: default VIBE_RELIABILITY_RUNTIME=off keeps the path unchanged."""
+    monkeypatch.delenv("VIBE_RELIABILITY_RUNTIME", raising=False)
+    monkeypatch.setattr("src.session.service.get_shared_index", lambda: _DummyIndex())
+    monkeypatch.setattr("src.tools.build_registry", lambda **kw: object())
+    monkeypatch.setattr("src.providers.chat.ChatLLM", lambda: object())
+    monkeypatch.setattr("src.memory.persistent.PersistentMemory", lambda: object())
+    monkeypatch.setattr("src.agent.loop.AgentLoop", _DummyAgentLoop)
+    monkeypatch.setattr("src.config.loader.load_runtime_agent_config", lambda overrides=None: object())
+    monkeypatch.setattr("src.config.loader.sanitize_session_overrides", lambda overrides: dict(overrides or {}))
+
+    service = SessionService(
+        store=SessionStore(tmp_path / "sessions"),
+        event_bus=EventBus(),
+        runs_dir=tmp_path / "runs",
+    )
+    attempt = Attempt(session_id="session-1", prompt="hello")
+
+    result = asyncio.run(service._run_with_agent(attempt, messages=[], session_config={}))
+
+    assert result["status"] == "completed"
+    # Off path is byte-for-byte current behavior: no reliability summary attached.
+    assert "reliability" not in result

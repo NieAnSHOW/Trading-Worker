@@ -394,11 +394,11 @@ class ReliabilityRuntime:
     def _step_arguments(step: PlanStep) -> dict[str, object]:
         """Arguments for the step's tool call.
 
-        The runtime does not itself know tool arguments; in production these
-        come from the planner. Empty args satisfy tools with no required
-        fields; schema validation gate-keeps the rest.
+        Task 7 handoff (option a): the planner populates ``step.arguments``;
+        the runtime forwards them verbatim. Empty when the tool accepts no
+        required fields; schema validation at the gateway gate-keeps the rest.
         """
-        return {}
+        return dict(step.arguments)
 
     # -- fast path + finalize ------------------------------------------------
 
