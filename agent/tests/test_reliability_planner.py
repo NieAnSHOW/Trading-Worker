@@ -204,6 +204,16 @@ class TestBudgetOverflow:
         with pytest.raises(ValueError, match="token"):
             PlanValidator().validate(plan, route)
 
+    def test_wall_clock_budget_exceeds_route_envelope_rejected(self):
+        # plan declares more wall-clock than the route envelope allows
+        plan = ExecutionPlan(
+            steps=[PlanStep(id="s1", capability="market_data")],
+            budgets={"steps": 3, "tokens": 1000, "wall_clock_seconds": 1000},
+        )
+        route = _route(budgets={"steps": 6, "tokens": 3000, "wall_clock_seconds": 120})
+        with pytest.raises(ValueError, match="wall.clock"):
+            PlanValidator().validate(plan, route)
+
     def test_wall_clock_overflow_rejected(self):
         plan = ExecutionPlan(
             steps=[

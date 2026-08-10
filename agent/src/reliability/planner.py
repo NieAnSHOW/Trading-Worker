@@ -171,6 +171,17 @@ class PlanValidator:
                     f"plan wall-clock {total}s exceeds budget {plan_wall}s"
                 )
 
+        # wall-clock: declared plan budget vs route envelope
+        route_wall = route.budgets.get("wall_clock_seconds")
+        if (
+            plan_wall is not None
+            and route_wall is not None
+            and plan_wall > route_wall
+        ):
+            raise ValueError(
+                f"plan wall-clock budget {plan_wall}s exceeds route envelope {route_wall}s"
+            )
+
     def ready_steps(self, plan: ExecutionPlan, completed: set[str]) -> list[PlanStep]:
         """Return steps whose dependencies are all in ``completed``.
 
