@@ -13,7 +13,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 const GITHUB_API: &str =
-    "https://api.github.com/repos/NieAnSHOW/Vibe-Trading-Desktop/releases/latest";
+    "https://api.github.com/repos/NieAnSHOW/Trading-Worker/releases/latest";
 const USER_AGENT: &str = "trading-worker-updater/1.0";
 
 // ── 类型 ──────────────────────────────────────────────────────────────

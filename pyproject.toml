@@ -64,8 +64,8 @@ dependencies = [
 [project.urls]
 Homepage = "https://vibetrading.wiki/"
 Documentation = "https://vibetrading.wiki/docs/"
-Repository = "https://github.com/HKUDS/Vibe-Trading"
-Issues = "https://github.com/HKUDS/Vibe-Trading/issues"
+Repository = "https://github.com/NieAnSHOW/Trading-Worker"
+Issues = "https://github.com/NieAnSHOW/Trading-Worker/issues"
 
 [project.scripts]
 vibe-trading = "cli:main"

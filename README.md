@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/NieAnSHOW/Vibe-Trading-Desktop/releases">下载桌面版</a>
+  <a href="https://github.com/NieAnSHOW/Trading-Worker/releases">下载桌面版</a>
   &nbsp;&middot;&nbsp;
   <a href="#项目定位">项目定位</a>
   &nbsp;&middot;&nbsp;
@@ -209,7 +209,7 @@ Trading Worker 由一个原生桌面壳和一个嵌入式研究工作区组成�
 
 ### 下载桌面应用
 
-1. 前往 [Releases](https://github.com/NieAnSHOW/Vibe-Trading-Desktop/releases) 下载对应平台安装包。
+1. 前往 [Releases](https://github.com/NieAnSHOW/Trading-Worker/releases) 下载对应平台安装包。
 2. 启动 Trading Worker，登录或注册账号，按提示一键安装研究依赖。
 3. 服务就绪后进入研究工作区，开始提问。
 
