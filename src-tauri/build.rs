@@ -23,6 +23,8 @@ fn main() {
             "console_install_channel_dep",
             "console_quit",
             "console_open_logs",
+            "console_get_mirror",
+            "console_toggle_mirror",
             "console_clear_logs",
             "console_clear_venv",
             "console_uninstall_legacy_app",

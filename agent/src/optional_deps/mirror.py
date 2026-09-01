@@ -16,6 +16,7 @@ from typing import Optional
 MIRROR_URLS = {
     "tsinghua": "https://pypi.tuna.tsinghua.edu.cn/simple",
     "aliyun": "https://mirrors.aliyun.com/pypi/simple",
+    "official": "https://pypi.org/simple",
 }
 
 # Bootstrap fallback order: try the user-selected mirror first, then each

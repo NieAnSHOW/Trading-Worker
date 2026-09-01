@@ -44,6 +44,12 @@ export const consoleCloseWebui = (): Promise<void> =>
 export const consoleOpenLogs = (): Promise<void> =>
   invoke<void>("console_open_logs");
 
+export const consoleGetMirror = (): Promise<string> =>
+  invoke<string>("console_get_mirror");
+
+export const consoleToggleMirror = (): Promise<string> =>
+  invoke<string>("console_toggle_mirror");
+
 export const consoleClearLogs = (): Promise<number> =>
   invoke<number>("console_clear_logs");
 

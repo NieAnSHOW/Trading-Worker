@@ -22,9 +22,7 @@ def test_default_mirror_is_tsinghua(tmp_path):
 
 def test_save_then_load_roundtrip(tmp_path):
     path = tmp_path / "mirror.json"
-    save_mirror_config(
-        MirrorConfig(name="aliyun", custom_index_url=""), path
-    )
+    save_mirror_config(MirrorConfig(name="aliyun", custom_index_url=""), path)
     cfg = load_mirror_config(path)
     assert cfg.name == "aliyun"
 
@@ -55,3 +53,9 @@ def test_resolve_index_url_off_returns_empty():
 def test_resolve_index_url_custom_uses_custom_url():
     cfg = MirrorConfig(name="custom", custom_index_url="https://x/simple")
     assert resolve_index_url(cfg) == "https://x/simple"
+
+
+def test_resolve_index_url_official_uses_pypi():
+    """'official' must resolve to pypi.org, not fall back to the tsinghua default."""
+    cfg = MirrorConfig(name="official", custom_index_url="")
+    assert resolve_index_url(cfg) == "https://pypi.org/simple"

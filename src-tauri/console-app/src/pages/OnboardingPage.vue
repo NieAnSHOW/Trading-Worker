@@ -8,13 +8,19 @@ import { useServiceStore } from "../stores/service";
 import { useBootstrapStore } from "../stores/bootstrap";
 import { useAuthStore } from "../stores/auth";
 import { config, loadPublicConfig } from "../config/prod";
-import { consoleBootstrap, consoleOpenWebui } from "../ipc/commands";
+import {
+  consoleBootstrap,
+  consoleGetMirror,
+  consoleOpenLogs,
+  consoleOpenWebui,
+  consoleToggleMirror,
+} from "../ipc/commands";
 import { onBootstrapEvent, onBootstrapExit, onServiceStarted } from "../ipc/events";
 import type { BootstrapEvent } from "../ipc/types";
 import AppButton from "../components/AppButton.vue";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import logoPng from "../assets/128x128@2x.png";
-import { Wrench } from "@lucide/vue";
+import { ArrowLeftRight, FolderOpen, Wrench } from "@lucide/vue";
 
 const env = useEnvStore();
 const service = useServiceStore();
@@ -37,6 +43,25 @@ const needsRepair = computed(() =>
   Boolean(displayError.value),
 );
 
+
+const mirrorName = ref("tsinghua");
+const mirrorLabel = computed(() => (mirrorName.value === "aliyun" ? "阿里云" : "清华"));
+
+async function onOpenLogs() {
+  try {
+    await consoleOpenLogs();
+  } catch (error) {
+    setErr(error);
+  }
+}
+
+async function onToggleMirror() {
+  try {
+    mirrorName.value = await consoleToggleMirror();
+  } catch (error) {
+    setErr(error);
+  }
+}
 function setErr(error: unknown) {
   errorMsg.value = error ? String(error) : "";
 }
@@ -130,6 +155,12 @@ onMounted(async () => {
   pageReady.value = true;
   pageEntering.value = true;
 
+
+  consoleGetMirror()
+    .then((name) => {
+      mirrorName.value = name;
+    })
+    .catch(() => {});
   unlistens = await Promise.all([
     onBootstrapEvent((event: BootstrapEvent) => {
       bootstrap.advance(event.stage, event.message ?? "");
@@ -197,6 +228,16 @@ function onStartupAnimationEnd() {
         <Wrench :size="16" aria-hidden="true" />
         安装/修复环境
       </AppButton>
+      <div v-if="needsRepair" class="onboarding-quick-actions">
+        <AppButton variant="ghost" data-test="open-logs-action" @click="onOpenLogs">
+          <FolderOpen :size="16" aria-hidden="true" />
+          打开日志
+        </AppButton>
+        <AppButton variant="ghost" data-test="toggle-mirror-action" @click="onToggleMirror">
+          <ArrowLeftRight :size="16" aria-hidden="true" />
+          安装源：{{ mirrorLabel }}
+        </AppButton>
+      </div>
     </section>
 
     <ConfirmDialog :open="installStopDialogOpen" title="服务运行中，确认停止并修复？" @close="onInstallStopDialogClose">
@@ -289,6 +330,19 @@ function onStartupAnimationEnd() {
   font-weight: 600;
   letter-spacing: 0.06em;
   box-shadow: 0 6px 20px hsl(var(--brand) / 0.28);
+}
+
+/* 快捷操作行(打开日志/切换安装源):ghost 次要按钮 */
+.onboarding-quick-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.onboarding-quick-actions :deep(.btn-ghost) {
+  font-family: var(--tw-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
 }
 
 .onboarding-page--ready .onboarding-stage {

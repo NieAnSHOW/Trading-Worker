@@ -66,6 +66,8 @@ fn main() {
             console::console_install_channel_dep,
             console::console_quit,
             console::console_open_logs,
+            console::console_get_mirror,
+            console::console_toggle_mirror,
             console::console_clear_logs,
             console::console_clear_venv,
             console::console_uninstall_legacy_app,

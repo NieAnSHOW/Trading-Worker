@@ -13,7 +13,10 @@ def run_bootstrap_cli(argv: Optional[list[str]] = None) -> int:
     import argparse
     from src.config.paths import get_runtime_root
     from src.optional_deps.mirror import (
-        MirrorConfig, load_mirror_config, resolve_index_url, resolve_trusted_host,
+        MirrorConfig,
+        load_mirror_config,
+        resolve_trusted_host,
+        save_mirror_config,
     )
     from src.optional_deps.sse_lines import sse_event, stage_line
 
@@ -29,6 +32,7 @@ def run_bootstrap_cli(argv: Optional[list[str]] = None) -> int:
     # 复制临时文件剔除 weasyprint 行,不修改原 requirements.txt。
     # ponytail: 与 install-deps.sh 一致。
     import tempfile
+
     _lines = requirements.read_text(encoding="utf-8").splitlines()
     _filtered = [ln for ln in _lines if "weasyprint" not in ln]
     if len(_filtered) != len(_lines):
@@ -36,18 +40,30 @@ def run_bootstrap_cli(argv: Optional[list[str]] = None) -> int:
         _tmp.write("\n".join(_filtered))
         _tmp.close()
         requirements = Path(_tmp.name)
-    # Mirror: CLI arg > persisted config > default tsinghua
+    # Mirror: CLI arg > persisted config > default tsinghua. An explicit
+    # --index-url is a verbatim override; everything else flows through the
+    # persisted config so run_bootstrap keeps its fallback chain
+    # (selected mirror -> aliyun). Pre-resolving the URL here used to
+    # collapse the chain to a single mirror with no fallback.
     cfg = load_mirror_config()
     if args.mirror:
         cfg = MirrorConfig(name=args.mirror, custom_index_url=args.index_url or "")
-    index_url = resolve_index_url(cfg)
-    trusted = resolve_trusted_host(cfg)
+        save_mirror_config(cfg)
+    if args.index_url:
+        index_url = args.index_url
+        trusted = resolve_trusted_host(MirrorConfig(name="custom", custom_index_url=args.index_url))
+    else:
+        index_url = ""
+        trusted = ""
     log_path = home / "logs" / "bootstrap.log"
 
     exit_code = 0
     for ev in run_bootstrap(
-        home_vibe=home, requirements=requirements,
-        index_url=index_url, trusted_host=trusted, log_path=log_path,
+        home_vibe=home,
+        requirements=requirements,
+        index_url=index_url,
+        trusted_host=trusted,
+        log_path=log_path,
     ):
         if args.sse:
             if ev.stage in ("done", "failed"):

@@ -32,6 +32,8 @@
     "allow-console-install-channel-dep",
     "allow-console-quit",
     "allow-console-open-logs",
+    "allow-console-get-mirror",
+    "allow-console-toggle-mirror",
     "allow-console-clear-logs",
     "allow-console-clear-venv",
     "allow-console-uninstall-legacy-app",

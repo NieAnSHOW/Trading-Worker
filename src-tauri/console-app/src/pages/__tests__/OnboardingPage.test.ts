@@ -17,6 +17,9 @@ const mocks = vi.hoisted(() => ({
     userInfo: { id: 1, nickName: "Tester", gender: 0, status: 1, loginType: 2 },
     expireAt: 9999999999,
   })),
+  consoleOpenLogs: vi.fn(async (): Promise<void> => {}),
+  consoleGetMirror: vi.fn(async (): Promise<string> => "tsinghua"),
+  consoleToggleMirror: vi.fn(async (): Promise<string> => "aliyun"),
   bootstrapExitHandler: null as ((code: number) => unknown) | null,
   unlisten: vi.fn(),
 }));
@@ -26,6 +29,9 @@ vi.mock("../../ipc/commands", () => ({
   consoleAuthStatus: mocks.consoleAuthStatus,
   consoleBootstrap: vi.fn(),
   consoleOpenWebui: vi.fn(),
+  consoleOpenLogs: mocks.consoleOpenLogs,
+  consoleGetMirror: mocks.consoleGetMirror,
+  consoleToggleMirror: mocks.consoleToggleMirror,
   consoleQuit: vi.fn(),
   consoleLogout: vi.fn(),
   consoleFetchAds: vi.fn(async () => []),
@@ -247,6 +253,27 @@ describe("OnboardingPage", () => {
     expect(wrapper.get('[data-test="repair-environment"]').text()).toContain("安装/修复环境");
     expect(wrapper.get(".onboarding-status").text()).toBe("请先点击安装环境");
     expect(mocks.consoleAuthStatus).not.toHaveBeenCalled();
+  });
+
+  it("exposes quick actions to open logs and toggle the install mirror", async () => {
+    mocks.consoleStatus.mockResolvedValueOnce({
+      env: "incomplete",
+      service_running: false,
+      port: null,
+    });
+    const wrapper = mount(OnboardingPage, { global: { plugins: [router] } });
+    await flushPromises();
+
+    // 默认镜像名在挂载时读取;按钮展示当前安装源。
+    expect(wrapper.get('[data-test="toggle-mirror-action"]').text()).toContain("清华");
+
+    await wrapper.get('[data-test="open-logs-action"]').trigger("click");
+    expect(mocks.consoleOpenLogs).toHaveBeenCalledOnce();
+
+    await wrapper.get('[data-test="toggle-mirror-action"]').trigger("click");
+    await flushPromises();
+    expect(mocks.consoleToggleMirror).toHaveBeenCalledOnce();
+    expect(wrapper.get('[data-test="toggle-mirror-action"]').text()).toContain("阿里云");
   });
 
   it("starts bootstrap from the repair button", async () => {

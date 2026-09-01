@@ -52,10 +52,6 @@ pub fn build_cmd_with_vip(
         // "启停服务→微信 poll 循环随进程被杀→重启后渠道不自动起→前端要求重新扫码"。
         // CLI 直接 `vibe-trading serve` 不经此函数,行为不受影响。
         .env("VIBE_TRADING_CHANNELS_AUTO_START", "1")
-        // Default pip mirror: Tsinghua (HTTPS) so first-run installs are fast
-        // on CN networks. The Python side (optional_deps.mirror) can override
-        // per-install via --index-url; this is just the process default.
-        .env("PIP_INDEX_URL", "https://pypi.tuna.tsinghua.edu.cn/simple")
         .env("PIP_DISABLE_PIP_VERSION_CHECK", "1")
         .env_remove("VIBE_DESKTOP_VIP_PROVISIONED")
         .env_remove("VIBE_DESKTOP_VIP_API_KEY")
@@ -514,30 +510,23 @@ mod tests {
     }
 
     #[test]
-    fn build_cmd_injects_default_pip_mirror() {
+    fn build_cmd_does_not_force_pip_mirror_env() {
+        // The mirror must come from optional_deps.mirror config (explicit
+        // --index-url per install). A forced PIP_INDEX_URL env silently
+        // overrode the user's "off" (official PyPI) selection.
         let python = Path::new("/fake/python3");
         let agent = Path::new("/fake/agent");
         let libs = Path::new("/fake/libs");
         let cmd = build_cmd_with_vip(python, agent, 8899, libs, Path::new("/fake/sessions"), None);
 
-        let mut index = None;
-        let mut trusted = None;
-        for (key, val) in cmd.get_envs() {
-            if key.to_str() == Some("PIP_INDEX_URL") {
-                index = val.and_then(|v| v.to_str()).map(String::from);
-            }
-            if key.to_str() == Some("PIP_TRUSTED_HOST") {
-                trusted = val.and_then(|v| v.to_str()).map(String::from);
-            }
+        for (key, _val) in cmd.get_envs() {
+            assert_ne!(
+                key.to_str(),
+                Some("PIP_INDEX_URL"),
+                "PIP_INDEX_URL must not be forced into the serve env"
+            );
         }
-        assert_eq!(
-            index.as_deref(),
-            Some("https://pypi.tuna.tsinghua.edu.cn/simple"),
-            "PIP_INDEX_URL must default to the Tsinghua mirror"
-        );
-        assert_eq!(trusted, None, "HTTPS mirror needs no trusted-host");
     }
-
     #[test]
     fn build_cmd_injects_sessions_dir_env() {
         let python = Path::new("/fake/python3");

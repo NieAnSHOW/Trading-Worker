@@ -255,6 +255,12 @@
           "markdownDescription": "Enables the console_get_llm_settings command without any pre-configured scope."
         },
         {
+          "description": "Enables the console_get_mirror command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-console-get-mirror",
+          "markdownDescription": "Enables the console_get_mirror command without any pre-configured scope."
+        },
+        {
           "description": "Enables the console_get_public_config command without any pre-configured scope.",
           "type": "string",
           "const": "allow-console-get-public-config",
@@ -453,6 +459,12 @@
           "markdownDescription": "Enables the console_take_pending_webui command without any pre-configured scope."
         },
         {
+          "description": "Enables the console_toggle_mirror command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-console-toggle-mirror",
+          "markdownDescription": "Enables the console_toggle_mirror command without any pre-configured scope."
+        },
+        {
           "description": "Enables the console_uninstall_legacy_app command without any pre-configured scope.",
           "type": "string",
           "const": "allow-console-uninstall-legacy-app",
@@ -553,6 +565,12 @@
           "type": "string",
           "const": "deny-console-get-llm-settings",
           "markdownDescription": "Denies the console_get_llm_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the console_get_mirror command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-console-get-mirror",
+          "markdownDescription": "Denies the console_get_mirror command without any pre-configured scope."
         },
         {
           "description": "Denies the console_get_public_config command without any pre-configured scope.",
@@ -751,6 +769,12 @@
           "type": "string",
           "const": "deny-console-take-pending-webui",
           "markdownDescription": "Denies the console_take_pending_webui command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the console_toggle_mirror command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-console-toggle-mirror",
+          "markdownDescription": "Denies the console_toggle_mirror command without any pre-configured scope."
         },
         {
           "description": "Denies the console_uninstall_legacy_app command without any pre-configured scope.",

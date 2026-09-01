@@ -2103,6 +2103,64 @@ pub fn console_clear_logs() -> Result<usize, String> {
     clear_logs_in(&layout.logs_dir)
 }
 
+/// pip 镜像配置文件路径 —— 与 Python 端 `src/optional_deps/mirror.py` 的
+/// `default_config_path()` 读写同一路径,bootstrap 启动时读取。
+fn mirror_config_path(layout: &Layout) -> std::path::PathBuf {
+    layout.root.join("runtime").join("optional_deps_mirror.json")
+}
+
+/// 读取镜像名。文件缺失/损坏/非国内镜像名(official|custom|off)时返回默认
+/// "tsinghua",与 Python 端 load_mirror_config 的缺省语义一致。
+fn read_mirror_name(path: &Path) -> String {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|v| {
+            v.get("name")
+                .and_then(|n| n.as_str())
+                .map(str::to_owned)
+        })
+        .filter(|n| n == "tsinghua" || n == "aliyun")
+        .unwrap_or_else(|| "tsinghua".to_owned())
+}
+
+fn write_mirror_name(path: &Path, name: &str) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("mkdir runtime: {e}"))?;
+    }
+    let body = serde_json::json!({"name": name, "custom_index_url": ""});
+    std::fs::write(
+        path,
+        serde_json::to_string(&body).map_err(|e| format!("serialize mirror config: {e}"))?,
+    )
+    .map_err(|e| format!("write mirror config: {e}"))
+}
+
+/// 在清华/阿里云之间切换并持久化,返回切换后的镜像名。
+fn toggle_mirror_in(path: &Path) -> Result<String, String> {
+    let next = if read_mirror_name(path) == "aliyun" {
+        "tsinghua"
+    } else {
+        "aliyun"
+    };
+    write_mirror_name(path, next)?;
+    Ok(next.to_owned())
+}
+
+/// 读取当前 pip 镜像名(onboarding 页展示用)。
+#[tauri::command]
+pub fn console_get_mirror() -> Result<String, String> {
+    let layout = Layout::from_home()?;
+    Ok(read_mirror_name(&mirror_config_path(&layout)))
+}
+
+/// 切换 pip 镜像(清华 ↔ 阿里云)并持久化,返回切换后的镜像名。
+#[tauri::command]
+pub fn console_toggle_mirror() -> Result<String, String> {
+    let layout = Layout::from_home()?;
+    toggle_mirror_in(&mirror_config_path(&layout))
+}
+
 /// 删除目录下所有 `.log` 文件,返回删除数。非 `.log` 文件(会话、配置等)不动。
 fn clear_logs_in(dir: &Path) -> Result<usize, String> {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -2118,6 +2176,41 @@ fn clear_logs_in(dir: &Path) -> Result<usize, String> {
         }
     }
     Ok(removed)
+}
+
+#[cfg(test)]
+mod mirror_tests {
+    use super::*;
+
+    #[test]
+    fn mirror_toggle_roundtrips_and_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("runtime").join("optional_deps_mirror.json");
+        // 无配置文件 → 默认 tsinghua → 切到 aliyun
+        assert_eq!(read_mirror_name(&path), "tsinghua");
+        assert_eq!(toggle_mirror_in(&path).unwrap(), "aliyun");
+        assert_eq!(read_mirror_name(&path), "aliyun");
+        // 再切回 tsinghua
+        assert_eq!(toggle_mirror_in(&path).unwrap(), "tsinghua");
+        // 文件内容与 Python 端格式一致
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["name"], "tsinghua");
+        assert_eq!(raw["custom_index_url"], "");
+    }
+
+    #[test]
+    fn mirror_read_tolerates_corrupt_or_foreign_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("mirror.json");
+        std::fs::write(&path, "not json").unwrap();
+        assert_eq!(read_mirror_name(&path), "tsinghua");
+        std::fs::write(&path, r#"{"name":"official","custom_index_url":""}"#).unwrap();
+        // official/custom/off 不在切换范围内,读取按默认处理
+        assert_eq!(read_mirror_name(&path), "tsinghua");
+        // 切换把 foreign 名重置回国内镜像
+        assert_eq!(toggle_mirror_in(&path).unwrap(), "aliyun");
+    }
 }
 
 #[cfg(target_os = "macos")]
