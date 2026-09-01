@@ -17,6 +17,7 @@ import {
 } from "../ipc/commands";
 import { onBootstrapEvent, onBootstrapExit, onServiceStarted } from "../ipc/events";
 import type { BootstrapEvent } from "../ipc/types";
+import { formatError } from "../lib/formatError";
 import AppButton from "../components/AppButton.vue";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import logoPng from "../assets/128x128@2x.png";
@@ -63,7 +64,7 @@ async function onToggleMirror() {
   }
 }
 function setErr(error: unknown) {
-  errorMsg.value = error ? String(error) : "";
+  errorMsg.value = formatError(error);
 }
 
 const installStopDialogOpen = ref(false);

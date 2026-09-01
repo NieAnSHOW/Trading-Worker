@@ -18,6 +18,7 @@ import { useBusy } from "../composables/useBusy";
 import { config as ProdConfig } from "../config/prod";
 import { CircleCheck, CircleUserRound, Gift, Headset, RefreshCw, ShieldCheck } from "@lucide/vue";
 import { notifyWebuiAuth } from "../webuiAuth";
+import { formatError } from "../lib/formatError";
 
 const router = useRouter();
 const auth = useAuthStore();
@@ -128,7 +129,7 @@ async function doRestartForMembershipUpdate() {
       auth.acknowledgeMembershipChange();
       await refreshMemberUsage();
     } catch (error) {
-      actionError.value = String(error);
+      actionError.value = formatError(error);
     }
   });
 }
@@ -174,7 +175,7 @@ async function onLogout(v: "ok" | "cancel") {
       notifyWebuiAuth("vibe-shell:auth-logout");
       await router.replace("/login");
     } catch (error) {
-      actionError.value = String(error);
+      actionError.value = formatError(error);
     }
   });
 }

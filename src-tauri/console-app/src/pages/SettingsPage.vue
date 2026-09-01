@@ -50,6 +50,7 @@ import { config as ProdConfig } from "../config/prod";
 import { qrSvgDataUrl } from "../lib/qr";
 import douyinPng from "../assets/douyin.png";
 import tauriConf from "../../../tauri.conf.json";
+import { formatError } from "../lib/formatError";
 
 const env = useEnvStore();
 const service = useServiceStore();
@@ -70,7 +71,7 @@ async function selectThemeMode(mode: ThemeMode) {
     themeMode.value = mode;
     window.dispatchEvent(new CustomEvent(THEME_MODE_EVENT, { detail: mode }));
   } catch (error) {
-    notice.value = `保存失败：${String(error)}`;
+    notice.value = `保存失败：${formatError(error)}`;
   }
 }
 
@@ -106,7 +107,7 @@ async function load() {
     }
     apiKey.value = settings.api_auth_key ?? "";
   } catch (error) {
-    loadError.value = String(error);
+    loadError.value = formatError(error);
   }
 }
 

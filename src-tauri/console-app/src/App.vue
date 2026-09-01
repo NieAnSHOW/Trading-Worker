@@ -17,6 +17,7 @@ import {
 import type { AdItem } from "./ipc/types";
 import { onQuitRequested, onWebuiClose, onWebuiOpen } from "./ipc/events";
 import { WEBUI_AUTH_EVENT, type WebuiAuthMessage } from "./webuiAuth";
+import { formatError } from "./lib/formatError";
 
 const errMsg = ref("");
 const route = useRoute();
@@ -178,7 +179,7 @@ async function returnToConsole() {
   }
 }
 onErrorCaptured((e) => {
-  errMsg.value = String(e);
+  errMsg.value = formatError(e);
   return false; // 阻止向上抛
 });
 
