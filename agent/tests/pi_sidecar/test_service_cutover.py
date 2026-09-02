@@ -127,7 +127,9 @@ def test_pi_engine_full_attempt_flow(svc, monkeypatch, tmp_path):
     assert result["pi"]["entry_ids"] == ["assist1"]  # M2：entry_ids 来自 message_start/end payload
     assert Path(result["run_dir"]).exists()
     ops = [op for op, _ in fake.requests]
-    assert ops[:3] == ["open_session", "new_session", "set_tool_manifest"]
+    # manifest 必须先于会话建立（SDK 在 createAgentSession 时快照 customTools）——首次 use 的
+    # set_tool_manifest 必须排在 open_session/new_session 之前，否则首 attempt 工具全部失效。
+    assert ops[:3] == ["set_tool_manifest", "open_session", "new_session"]
     assert ("prompt", {"session_id": session.session_id, "text": "research AAPL"}) in fake.requests
     # SSE 事件已经过归一化（text_delta/llm_usage 形状）
     events = svc.event_bus.replay(session.session_id, replay_all=True)

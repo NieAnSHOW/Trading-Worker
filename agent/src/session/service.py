@@ -646,8 +646,17 @@ class SessionService:
                 reason="pi_sidecar_unavailable",
             )
 
-        # 2) 会话打开/迁移/新建 + manifest + prompt
+        # 2) manifest（先于会话建立）+ 会话打开/迁移/新建 + prompt
         try:
+            # 2a) 工具 manifest 必须先于任何 createAgentSession——SDK 18.x 在会话创建时
+            # 快照 customTools，open/new_session 之后再 set_tool_manifest 不会绑定（每进程幂等）。
+            # 失败按下面 except 映射为明确协议错误，绝不静默以空工具继续。
+            if not self._manifest_sent:
+                self._pi_gateway_bridge(session_id)  # 惰性构建 self._pi_registry（一次）
+                tools = build_tool_manifest(self._pi_registry)
+                _run_on_pi_loop(client.request("set_tool_manifest", {"tools": tools}), timeout=120)
+                self._manifest_sent = True
+            # 2b) 会话打开/迁移/新建
             try:
                 _run_on_pi_loop(client.request("open_session", {"session_id": session_id}), timeout=30)
             except SidecarError as exc:
@@ -658,11 +667,6 @@ class SessionService:
                 migrated = _run_on_pi_loop(migrate_session_if_needed(self, client, session_id), timeout=120)
                 if not migrated:
                     _run_on_pi_loop(client.request("new_session", {"session_id": session_id}), timeout=30)
-            if not self._manifest_sent:
-                self._pi_gateway_bridge(session_id)  # 惰性构建 self._pi_registry（一次）
-                tools = build_tool_manifest(self._pi_registry)
-                _run_on_pi_loop(client.request("set_tool_manifest", {"tools": tools}), timeout=120)
-                self._manifest_sent = True
             self._pi_sessions.setdefault(session_id, {"migrated": True})
             self._active_pi_sessions.add(session_id)
             # 事件泵先于 prompt 注册（事件可能同步到达；FakeClient 单测依赖此顺序）
