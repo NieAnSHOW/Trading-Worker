@@ -105,6 +105,10 @@ function Invoke-Step2Assemble {
   if ($LASTEXITCODE -ne 0) { throw "[FAILED] build-console.ps1 exited $LASTEXITCODE" }
   & "$DesktopScripts\assemble.ps1"
   if ($LASTEXITCODE -ne 0) { throw "[FAILED] step 2: assemble exited $LASTEXITCODE" }
+  # Pi sidecar 资源（assemble 内的 build-pi.ps1 产出）
+  if (-not (Test-Path (Join-Path "$Root\.desktop-build\pi" "windows-x64\pi.exe"))) {
+    throw "pi sidecar binary missing at .desktop-build\pi\windows-x64\pi.exe"
+  }
   Write-Host "Assembly complete (.desktop-build populated)" -ForegroundColor Green
 }
 

@@ -27,6 +27,21 @@ pub fn log_vip_runtime_event(log_dir: &Path, event: &str) {
     }
 }
 
+/// Resolve the bundled Pi sidecar binary path from Tauri's resource directory.
+/// Resource layout (tauri.conf.json bundle.resources): "pi" -> <resource_dir>/pi/<target>/<bin>
+pub fn vibe_pi_sidecar_bin(resource_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    // 与 scripts/desktop/build-pi.sh 的目标目录保持一致（B7）
+    let target = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "macos-aarch64",
+        ("macos", "x86_64") => "macos-x86_64",
+        ("windows", "x86_64") => "windows-x64",
+        _ => return None,
+    };
+    let bin = if std::env::consts::OS == "windows" { "pi.exe" } else { "pi" };
+    let path = resource_dir.join("pi").join(target).join(bin);
+    if path.exists() { Some(path) } else { None }
+}
+
 pub fn build_cmd_with_vip(
     python: &Path,
     runtime_agent: &Path,
@@ -34,6 +49,7 @@ pub fn build_cmd_with_vip(
     runtime_libs: &Path,
     sessions_dir: &Path,
     vip: Option<&VipRuntimeCredential>,
+    pi_sidecar_bin: Option<&Path>,
 ) -> std::process::Command {
     let mut cmd = Command::new(python);
     cmd.arg("-c")
@@ -70,6 +86,13 @@ pub fn build_cmd_with_vip(
             );
     }
 
+    // B7：打包态把 Pi sidecar 二进制路径透传给 Python serve 进程
+    // （PiSidecarClient._default_command() 优先使用该 env 指向的编译产物）。
+    // 缺失时不设置 env：Python 侧回退 bun dev 命令（开发态），打包冒烟（smoke_pi.py）会拦截该回归。
+    if let Some(pi_bin) = pi_sidecar_bin {
+        cmd.env("VIBE_PI_SIDECAR_BIN", pi_bin);
+    }
+
     #[cfg(unix)]
     unsafe {
         use std::os::unix::process::CommandExt;
@@ -96,6 +119,7 @@ pub fn spawn(
     sessions_dir: &Path,
     logs_dir: &Path,
     vip: Option<&VipRuntimeCredential>,
+    pi_sidecar_bin: Option<&Path>,
 ) -> Result<Child, String> {
     let models_count = vip.map(|credential| credential.models.len());
     log_vip_runtime_event(
@@ -106,7 +130,7 @@ pub fn spawn(
             models_count.map_or_else(|| "n/a".to_string(), |count| count.to_string())
         ),
     );
-    let mut cmd = build_cmd_with_vip(python, runtime_agent, port, runtime_libs, sessions_dir, vip);
+    let mut cmd = build_cmd_with_vip(python, runtime_agent, port, runtime_libs, sessions_dir, vip, pi_sidecar_bin);
     // ponytail: kill stale listener before bind, else await_health may
     // connect to a leftover sidecar from a killed previous session.
     crate::port::kill_listener_on_port(port);
@@ -358,6 +382,7 @@ mod tests {
             Path::new("/fake/libs"),
             Path::new("/fake/sessions"),
             None,
+            None,
         );
 
         // Verify the program path is set correctly
@@ -388,6 +413,7 @@ mod tests {
             8899,
             Path::new("/fake/libs"),
             Path::new("/fake/sessions"),
+            None,
             None,
         );
 
@@ -470,6 +496,7 @@ mod tests {
             Path::new("/fake/libs"),
             Path::new("/fake/sessions"),
             None,
+            None,
         );
 
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -496,7 +523,7 @@ mod tests {
         let python = Path::new("/fake/python3");
         let agent = Path::new("/fake/agent");
         let libs = Path::new("/fake/libs");
-        let cmd = build_cmd_with_vip(python, agent, 8899, libs, Path::new("/fake/sessions"), None);
+        let cmd = build_cmd_with_vip(python, agent, 8899, libs, Path::new("/fake/sessions"), None, None);
 
         let mut found = false;
         for (key, val) in cmd.get_envs() {
@@ -517,7 +544,7 @@ mod tests {
         let python = Path::new("/fake/python3");
         let agent = Path::new("/fake/agent");
         let libs = Path::new("/fake/libs");
-        let cmd = build_cmd_with_vip(python, agent, 8899, libs, Path::new("/fake/sessions"), None);
+        let cmd = build_cmd_with_vip(python, agent, 8899, libs, Path::new("/fake/sessions"), None, None);
 
         for (key, _val) in cmd.get_envs() {
             assert_ne!(
@@ -533,7 +560,7 @@ mod tests {
         let agent = Path::new("/fake/agent");
         let libs = Path::new("/fake/libs");
         let sessions = Path::new("/fake/home/.vibe-trading/sessions");
-        let cmd = build_cmd_with_vip(python, agent, 8899, libs, sessions, None);
+        let cmd = build_cmd_with_vip(python, agent, 8899, libs, sessions, None, None);
 
         let mut found = false;
         for (key, val) in cmd.get_envs() {
@@ -559,6 +586,7 @@ mod tests {
             Path::new("/fake/libs"),
             Path::new("/fake/sessions"),
             None,
+            None,
         );
         let mut found = false;
         for (key, val) in cmd.get_envs() {
@@ -569,6 +597,76 @@ mod tests {
             }
         }
         assert!(found, "VIBE_TRADING_CHANNELS_AUTO_START=1 not injected");
+    }
+
+    #[test]
+    fn build_cmd_injects_pi_sidecar_bin_env() {
+        // B7：打包态 Python serve 进程必须拿到 VIBE_PI_SIDECAR_BIN（指向打包内 Pi 二进制）
+        let cmd = build_cmd_with_vip(
+            Path::new("/fake/python3"),
+            Path::new("/fake/agent"),
+            8899,
+            Path::new("/fake/libs"),
+            Path::new("/fake/sessions"),
+            None,
+            Some(Path::new("/fake/Resources/pi/macos-aarch64/pi")),
+        );
+
+        let mut found = false;
+        for (key, val) in cmd.get_envs() {
+            if key.to_str() == Some("VIBE_PI_SIDECAR_BIN")
+                && val.and_then(|v| v.to_str()) == Some("/fake/Resources/pi/macos-aarch64/pi")
+            {
+                found = true;
+            }
+        }
+        assert!(found, "VIBE_PI_SIDECAR_BIN not injected when pi binary resolved");
+    }
+
+    #[test]
+    fn build_cmd_omits_pi_sidecar_bin_env_when_not_resolved() {
+        // 开发态（无打包资源）：env 不设置，Python 侧回退 bun dev 命令
+        let cmd = build_cmd_with_vip(
+            Path::new("/fake/python3"),
+            Path::new("/fake/agent"),
+            8899,
+            Path::new("/fake/libs"),
+            Path::new("/fake/sessions"),
+            None,
+            None,
+        );
+
+        for (key, _val) in cmd.get_envs() {
+            assert_ne!(
+                key.to_str(),
+                Some("VIBE_PI_SIDECAR_BIN"),
+                "VIBE_PI_SIDECAR_BIN must be omitted when no bundled pi binary"
+            );
+        }
+    }
+
+    #[test]
+    fn vibe_pi_sidecar_bin_resolves_existing_packaged_binary() {
+        // 与 scripts/desktop/build-pi.sh 的目标目录保持一致（B7）
+        let (target, bin) = match (std::env::consts::OS, std::env::consts::ARCH) {
+            ("macos", "aarch64") => ("macos-aarch64", "pi"),
+            ("macos", "x86_64") => ("macos-x86_64", "pi"),
+            ("windows", "x86_64") => ("windows-x64", "pi.exe"),
+            (os, arch) => panic!("unsupported test host {os}/{arch}"),
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("pi").join(target);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(bin), b"x").unwrap();
+
+        let resolved = vibe_pi_sidecar_bin(tmp.path());
+        assert_eq!(resolved, Some(dir.join(bin)));
+    }
+
+    #[test]
+    fn vibe_pi_sidecar_bin_returns_none_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(vibe_pi_sidecar_bin(tmp.path()), None);
     }
 
     /// 回归测试：模拟一个「收到 SIGTERM 但拒绝退出」的 sidecar（复刻 uvicorn

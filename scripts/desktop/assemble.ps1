@@ -43,6 +43,10 @@ foreach ($d in @("runs","sessions","uploads",".swarm")) {
 Get-ChildItem -Path "$Build\agent" -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force "$Build\agent\tests" -ErrorAction SilentlyContinue
 
+# 4.1) Pi sidecar staging (windows-x64)
+Write-Host "=== Staging Pi sidecar ==="
+& (Join-Path $PSScriptRoot "build-pi.ps1")
+
 # 5) .env 种子
 Write-Host "=== Preparing .env seed ==="
 if (Test-Path "$Root\agent\.env") { Copy-Item "$Root\agent\.env" "$Build\agent\.env" }

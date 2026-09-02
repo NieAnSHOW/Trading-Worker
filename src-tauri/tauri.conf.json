@@ -43,7 +43,8 @@
       "../.desktop-build/agent": "agent",
       "../frontend/dist": "frontend/dist",
       "../.desktop-build/agent/.env": "agent/.env",
-      "../.desktop-build/VERSION": "VERSION"
+      "../.desktop-build/VERSION": "VERSION",
+      "../.desktop-build/pi": "pi"
     }
   }
 }

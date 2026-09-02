@@ -159,6 +159,13 @@ while IFS= read -r -d '' b; do
 done < <(find "$APP_PATH/Contents/Resources/python-runtime/bin" -type f -print0 2>/dev/null)
 ok "解释器可执行签名完成（$BIN_COUNT 个）"
 
+# 4c.1 Pi sidecar 二进制（compiled Bun executable；必须随 app deep-sign，design §Packaging）
+for pibin in "$APP_PATH"/Contents/Resources/pi/*/pi*; do
+  [ -f "$pibin" ] || continue
+  log "codesign pi binary: $pibin"
+  codesign "${CS_RUNTIME[@]}" --entitlements "$ENT" "$pibin"
+done
+
 # 4d. 主 app bundle（最后；--deep 兜底覆盖 Contents/MacOS 主二进制与任何遗漏）
 log "签名主 bundle …"
 codesign "${CS_RUNTIME[@]}" --deep --entitlements "$ENT" "$APP_PATH"

@@ -772,6 +772,13 @@ pub async fn start_service_inner(
             vip_session.is_some()
         ),
     );
+    // B7：打包态把 Pi sidecar 编译二进制路径注入 Python serve 进程 env
+    // （sidecar.rs vibe_pi_sidecar_bin；缺失时不注入，Python 回退 bun dev 命令）。
+    let pi_sidecar_bin = app
+        .path()
+        .resource_dir()
+        .ok()
+        .and_then(|resource_dir| crate::sidecar::vibe_pi_sidecar_bin(&resource_dir));
     let mut child = crate::sidecar::spawn(
         &layout.venv_python,
         &layout.runtime_agent,
@@ -782,6 +789,7 @@ pub async fn start_service_inner(
         vip_session
             .as_ref()
             .and_then(|session| session.vip.as_ref()),
+        pi_sidecar_bin.as_deref(),
     )
     .map_err(|e| ServiceStartError::SpawnFailed { message: e })?;
 
@@ -2806,6 +2814,7 @@ mod tests {
                 8899,
                 Path::new("/fake/libs"),
                 Path::new("/fake/sessions"),
+                None,
                 None,
             );
             for key in [

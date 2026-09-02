@@ -52,6 +52,7 @@ fn sidecar_command_receives_vip_values_only_as_process_env() {
         std::path::Path::new("/fake/libs"),
         std::path::Path::new("/fake/sessions"),
         Some(&vip),
+        None,
     );
     assert_eq!(
         env(&cmd, "VIBE_DESKTOP_VIP_PROVISIONED").as_deref(),
@@ -82,6 +83,7 @@ fn build_cmd_sets_current_dir() {
         &PathBuf::from("/fake/libs"),
         &PathBuf::from("/fake/sessions"),
         None,
+        None,
     );
 
     assert_eq!(cmd.get_current_dir(), Some(agent.as_path()));
@@ -97,6 +99,7 @@ fn build_cmd_sets_environment_vars() {
         9999,
         &PathBuf::from("/fake/libs"),
         &PathBuf::from("/fake/sessions"),
+        None,
         None,
     );
 

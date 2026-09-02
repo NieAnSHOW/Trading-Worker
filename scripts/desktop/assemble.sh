@@ -48,6 +48,12 @@ for d in runs sessions uploads .swarm; do rm -rf "$BUILD/agent/$d"; done
 find "$BUILD/agent" -type d -name "__pycache__" -prune -exec rm -rf {} + 2>/dev/null || true
 rm -rf "$BUILD/agent/tests"
 
+# 4.1) Pi sidecar 暂存（二进制/extensions/skills 由 scripts/desktop/build-pi.sh 产出）
+if [ -x "$ROOT/scripts/desktop/build-pi.sh" ]; then
+  echo "=== Staging Pi sidecar ==="
+  bash "$ROOT/scripts/desktop/build-pi.sh" "$(uname -m | grep -q arm64 && echo macos-aarch64 || echo macos-x86_64)"
+fi
+
 # 5) .env 种子:若仓库 agent/.env 不存在,用 agent/.env.example 兜底(不含真密钥)
 echo "=== Preparing .env seed ==="
 if [ -f "$ROOT/agent/.env" ]; then cp "$ROOT/agent/.env" "$BUILD/agent/.env";

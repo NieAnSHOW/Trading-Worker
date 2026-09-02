@@ -132,10 +132,11 @@ verify_resource() {
 }
 
 resources_ok=1
-# runtime 已由上一个 section 保证，这里只校验 assemble 产物（agent/.env/VERSION）
+# runtime 已由上一个 section 保证，这里只校验 assemble 产物（agent/.env/VERSION/pi）
 verify_resource "$BUILD/agent"       "agent 代码模板"    || resources_ok=0
 verify_resource "$BUILD/agent/.env"  "agent .env 种子"   || resources_ok=0
 verify_resource "$BUILD/VERSION"     "VERSION 标记"      || resources_ok=0
+verify_resource "$BUILD/pi"          "pi sidecar 资源"   || resources_ok=0
 
 if [ "$resources_ok" -ne 1 ]; then
     warn "assemble 产物不全，调用 assemble.sh 兜底组装…"
@@ -149,6 +150,7 @@ if [ "$resources_ok" -ne 1 ]; then
         verify_resource "$BUILD/agent"       "agent 代码模板"    || resources_ok=0
         verify_resource "$BUILD/agent/.env"  "agent .env 种子"   || resources_ok=0
         verify_resource "$BUILD/VERSION"     "VERSION 标记"      || resources_ok=0
+        verify_resource "$BUILD/pi"          "pi sidecar 资源"   || resources_ok=0
         [ "$resources_ok" -ne 1 ] && { err "assemble 后仍缺资源"; exit 2; }
     else
         err "找不到 scripts/desktop/assemble.sh，无法兜底"
@@ -277,9 +279,9 @@ if [ "$SKIP_SMOKE" -eq 0 ]; then
         warn "Info.plist 未找到 CFBundleIconFile"
     fi
 
-    # 4) 打包资源齐全（python-runtime / agent / frontend dist）
+    # 4) 打包资源齐全（python-runtime / agent / frontend dist / pi）
     RES="$APP_PATH/Contents/Resources"
-    for r in python-runtime agent frontend/dist; do
+    for r in python-runtime agent frontend/dist pi; do
         if [ -e "$RES/$r" ]; then ok "resource ✓ $r"; else err "resource ✗ $r 缺失"; exit 4; fi
     done
 
