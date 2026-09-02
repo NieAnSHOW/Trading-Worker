@@ -97,7 +97,15 @@ describe("PiSessionDriver construction", () => {
       expect(asst.api).toBe("anthropic-messages");
       expect(asst.provider).toBe("vibe-import");
       expect(asst.model).toBe("imported");
-      expect(asst.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 });
+      // usage 必须带 cost（SDK addUsage 无守卫读 usage.cost.total；Task 17 集成实证）
+      expect(asst.usage).toEqual({
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      });
       expect(asst.stopReason).toBe("stop");
       expect(typeof asst.timestamp).toBe("number");
     } finally {

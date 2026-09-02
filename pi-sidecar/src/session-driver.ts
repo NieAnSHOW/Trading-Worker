@@ -200,7 +200,18 @@ export class PiSessionHandle implements SessionLike {
               api: "anthropic-messages" as const,
               provider: "vibe-import",
               model: "imported",
-              usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+              // Task 17 集成实证：SDK SessionManager.addUsage 对每条 assistant message
+              // 无守卫执行 `target.cost += usage.cost.total`（session-manager.ts）——usage
+              // 缺 cost 会在 appendMessage 时崩溃（"undefined is not an object (evaluating
+              // 'usage.cost.total')"）。合成 usage 必须带完整 cost（形状与 SDK 一致）。
+              usage: {
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+                totalTokens: 0,
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+              },
               stopReason: "stop" as const,
               timestamp: ts,
             }
