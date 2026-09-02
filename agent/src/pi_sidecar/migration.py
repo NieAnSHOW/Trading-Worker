@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from src.pi_sidecar.client import PiSidecarClient, SidecarError
+from src.pi_sidecar.protocol import FrameError
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,54 @@ def _read_pi_header_id_compat(jsonl_path: str) -> str | None:
     return None
 
 
+#: 单帧导入净荷上限（final-review finding 1）：legacy 会话消息总量可远超协议 1MiB
+#: 单帧上限（~600+ 条中文消息即触顶）。分块把每次 import_messages 的净荷控制在
+#: 该预算内（900KB < 1MiB，留协议头/消息头余量），append-additive 逐块导入，语义不变。
+_MAX_IMPORT_FRAME_BYTES = 900_000
+
+
+def _frame_messages_chunks(msgs: list[dict]) -> list[list[dict]]:
+    """按序列化 UTF-8 字节长度把 msgs 切成 ≤ _MAX_IMPORT_FRAME_BYTES 的子批（时间序保持）。"""
+    chunks: list[list[dict]] = []
+    cur: list[dict] = []
+    cur_size = 0
+    for m in msgs:
+        size = len(json.dumps(m, ensure_ascii=False).encode("utf-8"))
+        if cur and cur_size + size > _MAX_IMPORT_FRAME_BYTES:
+            chunks.append(cur)
+            cur, cur_size = [], 0
+        cur.append(m)
+        cur_size += size
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+async def _import_messages_chunked(client: PiSidecarClient, session_id: str, msgs: list[dict]) -> None:
+    """append-additive 分块导入；任一块失败向上抛（调用方不写 marker）。"""
+    for sub in _frame_messages_chunks(msgs):
+        await client.request("import_messages", {"session_id": session_id, "messages": sub})
+
+
+async def _count_pi_session_messages(client: PiSidecarClient, session_id: str) -> int:
+    """翻页统计既有 Pi 会话里的 user/assistant 消息数（重试续传起点）。
+
+    仅用于「open_session 成功但未打 marker + 旧消息在」的补迁移路径——前次迁移可能
+    已把旧消息前缀导入该会话；从既有数继续导入，避免重复。新会话（new_session 刚建）
+    恒 0，跳过本调用。
+    """
+    total = 0
+    before: str | None = None
+    while True:
+        r = await client.request("get_messages", {"session_id": session_id, "limit": 500, "before_cursor": before})
+        batch = r.get("messages") or []
+        total += sum(1 for m in batch if m.get("role") in ("user", "assistant"))
+        nxt = r.get("next_cursor")
+        if not batch or not nxt:
+            return total
+        before = nxt
+
+
 async def migrate_session_if_needed(service: Any, client: PiSidecarClient, session_id: str) -> bool:
     if is_migrated(session_id):
         return False
@@ -80,21 +129,32 @@ async def migrate_session_if_needed(service: Any, client: PiSidecarClient, sessi
         return False  # 新会话：调用方 new_session
     # 1) 只读读旧会话（get_messages 只读打开 messages.jsonl；不写任何旧文件）
     try:
-        old_messages = service.store.get_messages(session_id, limit=10_000)
+        old_messages = service.store.get_messages(session_id, limit=100_000)
     except Exception as exc:  # noqa: BLE001
         logger.error("migration read failed for %s: %s", session_id, exc)
         return False
-    # 2) 建 Pi 会话（同 ID）
+    # 2) 时间序 user/assistant 文本；attempt/run 引用仅作 marker metadata，不进模型上下文
+    msgs = [
+        {"role": m.role, "content": m.content, "timestamp": m.created_at}
+        for m in old_messages
+        if m.role in ("user", "assistant") and m.content
+    ]
+    # 3) 打开（或新建，同 ID）Pi 会话 + append-additive 分块导入 + 原子 marker。
+    #    final-review finding 1：migrate 自身幂等可重试——先 open_session；若成功（前次
+    #    new_session 已建文件但导入失败、无 marker）则从既有消息数续传，绝不重复；not_found
+    #    才 new_session。整段失败 → 旧文件不动、无 marker（不宣告），下次 attempt 重试。
     try:
-        await client.request("new_session", {"session_id": session_id})
-        # 3) 时间序导入 user/assistant 文本；attempt/run 引用仅作 marker metadata，不进模型上下文
-        msgs = [
-            {"role": m.role, "content": m.content, "timestamp": m.created_at}
-            for m in old_messages
-            if m.role in ("user", "assistant") and m.content
-        ]
-        await client.request("import_messages", {"session_id": session_id, "messages": msgs})
-    except SidecarError as exc:
+        try:
+            await client.request("open_session", {"session_id": session_id}, timeout=30)
+            resumed = await _count_pi_session_messages(client, session_id)
+        except SidecarError as exc:
+            if exc.code != "not_found":
+                raise
+            await client.request("new_session", {"session_id": session_id}, timeout=30)
+            resumed = 0
+        if resumed < len(msgs):
+            await _import_messages_chunked(client, session_id, msgs[resumed:])
+    except (SidecarError, FrameError) as exc:
         logger.error("migration failed for %s (no marker written, old files untouched): %s", session_id, exc)
         return False
     # 4) 原子 marker + 投影（design step 5）

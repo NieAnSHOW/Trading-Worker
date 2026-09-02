@@ -137,6 +137,77 @@ def test_pi_engine_full_attempt_flow(svc, monkeypatch, tmp_path):
     assert "text_delta" in names and "llm_usage" in names
 
 
+class AbortClient(FakeClient):
+    """final-review finding 2：prompt 中途被 abort → SDK 发空文本 agent_end，stopReason="aborted"。
+
+    真实 SDK（agent.ts:1597-1705）abort 时 shouldEmitVisibleError=false → 不发 message_start/end，
+    只发 agent_end messages=[{role:assistant, content:empty, stopReason:"aborted"}]。
+    """
+
+    async def request(self, op, params, *, timeout=30.0):
+        import src.session.service as svc_mod
+
+        self.requests.append((op, params))
+        if op == "open_session":
+            raise SidecarError("not_found", "no session")
+        if op == "new_session":
+            return {"session_file": "/tmp/pi/fake.jsonl"}
+        if op == "set_tool_manifest":
+            return {"count": len(params.get("tools", []))}
+        if op == "prompt":
+            sid = params["session_id"]
+            listener = svc_mod._PI_EVENT_LISTENERS.get(sid)
+            listener(
+                "session_event",
+                sid,
+                {
+                    "type": "agent_end",
+                    "payload": {
+                        "isTerminal": True,
+                        "messages": [
+                            {
+                                "role": "assistant",
+                                "content": [{"type": "text", "text": ""}],
+                                "stopReason": "aborted",
+                                "errorMessage": "",
+                            }
+                        ],
+                    },
+                },
+            )
+            return {"accepted": True}
+        if op == "abort":
+            return {"aborted": True}
+        raise SidecarError("unknown_op", op)
+
+
+def test_cancel_mid_turn_marks_attempt_failed_not_success(svc, monkeypatch):
+    """final-review finding 2：中止 attempt 的终态必须非 success——绝不因 agent_end
+    isTerminal 到达就把空内容的取消 attempt 标成 completed。"""
+    from src.session.models import AttemptStatus
+
+    monkeypatch.setenv("VIBE_AGENT_ENGINE", "pi")
+    _wire_pi(svc, AbortClient(), monkeypatch)
+    session = svc.create_session(title="t")
+    attempt = Attempt(session_id=session.session_id, prompt="x", created_at="2026-08-30T00:00:00")
+
+    async def run_pi_attempt():
+        await svc._run_attempt_pi(session, attempt, include_shell_tools=False)
+
+    asyncio.run(run_pi_attempt())
+    # 终态非 success：abort 的空文本不得被当作成功收尾
+    assert attempt.status is not AttemptStatus.COMPLETED
+    assert attempt.status == AttemptStatus.FAILED
+    assert "aborted" in (attempt.error or "")
+
+    # 交互路径等价（send_message → attempt 终态非成功）
+    _wire_pi(svc, AbortClient(), monkeypatch)
+    session2 = svc.create_session(title="t2")
+    asyncio.run(_send_and_drain(svc, session2.session_id, "please stop"))
+    attempts = svc.store.list_attempts(session2.session_id)
+    assert attempts and all(a.status is not AttemptStatus.COMPLETED for a in attempts)
+
+
 def test_pi_unavailable_fails_without_legacy_fallback(svc, monkeypatch):
     monkeypatch.setenv("VIBE_AGENT_ENGINE", "pi")
     _wire_pi(svc, FakeClient(fail_start=True), monkeypatch)
@@ -264,3 +335,85 @@ def test_get_messages_routes_to_pi_for_pi_sessions(svc, monkeypatch):
     assert len(msgs) == 2
     assert msgs[1].metadata.get("pi_entry_id") == "e2"
     assert any(op == "get_messages" for op, _ in fake.requests)
+
+
+def test_respawn_on_provider_env_change_when_idle(svc, monkeypatch):
+    """final-review finding 5：provider/model env 变更 → 空闲 attempt 起点有意重启 sidecar
+    （新 env），且清 _manifest_sent 让下次会话建立前重发 manifest。"""
+    import os
+    import src.session.service as svc_mod
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "oldkey")
+    from src.session.service import _env_subset
+
+    class FakeStaleClient:
+        unavailable = False
+        started = True
+
+        def __init__(self):
+            # 快照「当前」env（oldkey）；随后 env 变更使其过期
+            self.spawn_env = dict(_env_subset(os.environ))
+            self.respawned = 0
+
+        async def respawn(self):
+            self.respawned += 1
+
+    fake = FakeStaleClient()
+    monkeypatch.setattr(svc_mod, "_run_on_pi_loop", lambda coro, timeout=30.0: asyncio.run(coro))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "newkey")  # 模拟设置保存只改 os.environ
+    svc._manifest_sent = True
+    svc._active_pi_sessions.clear()
+    svc._restart_pi_client_if_stale(fake)
+    assert fake.respawned == 1
+    assert svc._manifest_sent is False  # 新 sidecar 需重发 manifest
+
+
+def test_no_respawn_when_env_unchanged(svc, monkeypatch):
+    import os
+    import src.session.service as svc_mod
+    from src.session.service import _env_subset
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "stable")
+
+    class FakeClient2:
+        unavailable = False
+        started = True
+
+        def __init__(self):
+            self.spawn_env = dict(_env_subset(os.environ))
+            self.respawned = 0
+
+        async def respawn(self):
+            self.respawned += 1
+
+    fake = FakeClient2()
+    monkeypatch.setattr(svc_mod, "_run_on_pi_loop", lambda coro, timeout=30.0: asyncio.run(coro))
+    svc._restart_pi_client_if_stale(fake)
+    assert fake.respawned == 0  # env 未变 → 不重启
+
+
+def test_respawn_deferred_while_attempt_active(svc, monkeypatch):
+    import os
+    import src.session.service as svc_mod
+    from src.session.service import _env_subset
+
+    monkeypatch.setenv("LANGCHAIN_PROVIDER", "deepseek")
+
+    class FakeActiveClient:
+        unavailable = False
+        started = True
+
+        def __init__(self):
+            self.spawn_env = dict(_env_subset(os.environ))
+            self.respawned = 0
+
+        async def respawn(self):
+            self.respawned += 1
+
+    fake = FakeActiveClient()
+    monkeypatch.setattr(svc_mod, "_run_on_pi_loop", lambda coro, timeout=30.0: asyncio.run(coro))
+    monkeypatch.setenv("LANGCHAIN_PROVIDER", "openai")  # env 已过期
+    svc._active_pi_sessions.add("other-session")  # 另一会话 attempt 活跃
+    svc._restart_pi_client_if_stale(fake)
+    assert fake.respawned == 0  # 不打断 in-flight；延迟到下次空闲 attempt
+

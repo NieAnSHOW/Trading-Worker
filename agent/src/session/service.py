@@ -38,6 +38,20 @@ _AGENT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_na
 
 logger = logging.getLogger(__name__)
 
+# final-review finding 5：sidecar 解析模型/Provider 只读这些 env（model-wiring.ts 的
+# vibeProviderRegistrations + resolveDefaultModel）。它们变化 → 需有意重启 sidecar。
+# 注意：VIBE_PI_AGENT_DIR/SESSIONS_DIR 等路径类 env 不应触发重启（进程级同路径）。
+_PI_MODEL_ENV_PREFIXES = ("DEEPSEEK", "ZHIPU", "DASHSCOPE", "MOONSHOT", "MINIMAX", "GROQ", "OPENAI", "ANTHROPIC")
+_PI_MODEL_ENV_KEYS = ("LANGCHAIN_PROVIDER", "LANGCHAIN_MODEL_NAME") + tuple(
+    f"{p}_{s}" for p in _PI_MODEL_ENV_PREFIXES for s in ("API_KEY", "BASE_URL")
+)
+
+
+def _env_subset(source: dict) -> dict:
+    """取 source 里影响 sidecar 模型/Provider 配置的 env 子集（缺失键不参与）。"""
+    return {k: source[k] for k in _PI_MODEL_ENV_KEYS if k in source}
+
+
 # ---------------------------------------------------------------------------
 # Pi sidecar 专用事件循环（B4）：client 生命周期绑定到模块级守护线程 loop，
 # 所有 service<->client 交互经 _run_on_pi_loop 桥接（run_coroutine_threadsafe）。
@@ -123,6 +137,35 @@ def _get_session_service_safe():
         return None
 
 
+#: SDK 终止态里代表「非正常收尾」的 assistant stopReason（agent.ts:1597-1705 实证：
+#: abort 的 errorMsg.stopReason="aborted"，provider 中途中止="error"；正常 end_turn/
+#: stop/max_iterations 等不在此列）。见 final-review finding 2。
+_ABNORMAL_STOP_REASONS = {"aborted", "error", "user_interrupt"}
+
+
+def _agent_end_failure_reason(payload: dict) -> Optional[str]:
+    """在 agent_end 的 messages 里定位末条 assistant 消息，判定是否非正常终止。
+
+    返回可读失败原因（errorMessage 优先，其次 stopReason）；正常终止/缺 messages → None。
+    SDK abort 时 shouldEmitVisibleError=false → 不派发 message_start/end，collected 文本为空，
+    故必须靠此处 stopReason 区分「aborted/error」与「正常收尾」，否则 Stop 按钮会把空内容的
+    中止 attempt 标成 completed。
+    """
+    msgs = payload.get("messages")
+    if not isinstance(msgs, list):
+        return None
+    for m in reversed(msgs):
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        em = m.get("errorMessage")
+        sr = m.get("stopReason")
+        if isinstance(em, str) and em:
+            return em
+        if isinstance(sr, str) and sr in _ABNORMAL_STOP_REASONS:
+            return sr
+    return None
+
+
 class SessionService:
     """Session lifecycle service.
 
@@ -184,6 +227,34 @@ class SessionService:
 
             self._pi_bridges[session_id] = GatewayBridge(self._pi_registry)
         return self._pi_bridges[session_id]
+
+    def _restart_pi_client_if_stale(self, client: Any) -> None:
+        """final-review finding 5：sidecar spawn 时 env 冻结，provider/model 设置保存后
+        （settings save 只改 os.environ）运行中 sidecar 拿不到 → 在当前 attempt 起点惰性重启。
+
+        只在无其它活跃 attempt 时重启（绝不打断 in-flight 回合）；有活跃 attempt 则跳过，
+        延迟到下一次空闲 attempt。重启后用新 env 重开 sidecar，且清 _manifest_sent 让本
+        attempt 向新 sidecar 重发工具 manifest（新进程无 manifest，必须先于会话建立）。
+        """
+        if client is None or client.unavailable or not client.started:
+            return
+        # 防御：duck-typed fake（单测）可能无 spawn_env —— 视为不可判 stale，跳过。
+        last_env = getattr(client, "spawn_env", None)
+        if last_env is None:
+            return
+        if _env_subset(os.environ) == _env_subset(last_env):
+            return
+        if self._active_pi_sessions:
+            # 另一会话 attempt 仍活跃：不 kill in-flight；延迟到下次空闲 attempt 重启。
+            logger.info("pi sidecar env stale but attempt(s) active; deferring respawn")
+            return
+        try:
+            _run_on_pi_loop(client.respawn(), timeout=90)
+            # 新 sidecar 进程无 manifest/会话 → 下次会话建立前必须重发 manifest。
+            self._manifest_sent = False
+            logger.info("pi sidecar respawned due to provider/model env change")
+        except (SidecarError, Exception):  # noqa: BLE001
+            logger.warning("pi sidecar respawn after env change failed; will retry next attempt")
 
     def create_session(self, title: str = "", config: Optional[Dict[str, Any]] = None) -> Session:
         """Create a new session.
@@ -602,6 +673,9 @@ class SessionService:
         # 定义在前、注册在 prompt 之前（section 2）——事件可能同步到达。
         terminal = threading.Event()
         collected = {"text": "", "entry_ids": [], "tool_call_ids": [], "react_trace": []}
+        # final-review finding 2：agent_end 虽 isTerminal，但可能因 abort/provider-error 收尾——
+        # 记下非正常终止原因，wait 返回后据此标 failed（而非 success with empty content）。
+        terminal_outcome: Dict[str, Any] = {"failed_reason": None}
 
         def on_event(event: str, sid: str, data: Dict[str, Any]) -> None:
             if sid != session_id or event != "session_event":
@@ -627,6 +701,11 @@ class SessionService:
                         {"type": "tool_call", "tool": ndata.get("tool"), "result_preview": ndata.get("preview")}
                     )
             if ptype == "agent_end" and payload.get("isTerminal") is not False:
+                # final-review finding 2：agent_end 可能因 abort/error 收尾（文本为空），
+                # 不能一律当 success；记录非正常终止原因，wait 返回后据此标 failed。
+                reason = _agent_end_failure_reason(payload)
+                if reason:
+                    terminal_outcome["failed_reason"] = reason
                 terminal.set()
 
         # 1) 启动（B4：started 公开属性；失败 → 永久 unavailable，绝不回退 legacy）
@@ -646,6 +725,25 @@ class SessionService:
                 reason="pi_sidecar_unavailable",
             )
 
+        # final-review finding 4：pi 引擎 registry 固定 exclude shell tools（设计安全面：
+        # shell 工具经 legacy 单测审查，未对 pi gateway 豁免）。显式请求 shell 的会话在
+        # pi 下静默缺失 bash → 发 pi.notice 告知（绝不静默扩大能力面）。
+        if include_shell_tools:
+            self.event_bus.emit(
+                attempt.session_id,
+                "pi.notice",
+                {
+                    "kind": "shell_tools_unavailable_pi",
+                    "message": (
+                        "include_shell_tools is not honored under the pi engine: shell tools "
+                        "are excluded from the pi tool registry (bash unavailable); continuing without them"
+                    ),
+                },
+            )
+        # final-review finding 5：provider/model env 变更未反映到正在运行的 sidecar（env 在
+        # spawn 时冻结）→ 无其它活跃 attempt 时有意重启（惰性：恰在此次空闲 attempt 起点）。
+        self._restart_pi_client_if_stale(client)
+
         # 2) manifest（先于会话建立）+ 会话打开/迁移/新建 + prompt
         try:
             # 2a) 工具 manifest 必须先于任何 createAgentSession——SDK 18.x 在会话创建时
@@ -657,16 +755,22 @@ class SessionService:
                 _run_on_pi_loop(client.request("set_tool_manifest", {"tools": tools}), timeout=120)
                 self._manifest_sent = True
             # 2b) 会话打开/迁移/新建
+            from src.pi_sidecar.migration import migrate_session_if_needed, is_migrated, old_session_exists
+
             try:
                 _run_on_pi_loop(client.request("open_session", {"session_id": session_id}), timeout=30)
             except SidecarError as exc:
                 if exc.code != "not_found":
                     raise
-                from src.pi_sidecar.migration import migrate_session_if_needed
-
-                migrated = _run_on_pi_loop(migrate_session_if_needed(self, client, session_id), timeout=120)
+                # 会话不存在：有旧记录则懒迁移（migrate 内部 open/new+分块导入），否则新建
+                migrated = _run_on_pi_loop(migrate_session_if_needed(self, client, session_id), timeout=180)
                 if not migrated:
                     _run_on_pi_loop(client.request("new_session", {"session_id": session_id}), timeout=30)
+            else:
+                # open 成功但该会话是「旧文件已建 Pi 会话、却无 marker + 旧消息在」的
+                # 残留迁移态（前次导入中途失败）→ 把它当可重试迁移：续传补齐，绝不静默丢历史。
+                if not is_migrated(session_id) and old_session_exists(self.store, session_id):
+                    _run_on_pi_loop(migrate_session_if_needed(self, client, session_id), timeout=180)
             self._pi_sessions.setdefault(session_id, {"migrated": True})
             self._active_pi_sessions.add(session_id)
             # 事件泵先于 prompt 注册（事件可能同步到达；FakeClient 单测依赖此顺序）
@@ -697,6 +801,26 @@ class SessionService:
 
         collected["react_trace"].append({"type": "answer", "content": collected["text"][:500]})
         metrics = self._load_metrics(Path(run_dir))
+        pi_meta = {
+            "session_file": (self._pi_sessions.get(session_id) or {}).get("session_file"),
+            "pi_session_id": session_id,
+            "entry_ids": collected["entry_ids"],
+            "tool_call_ids": collected["tool_call_ids"],
+        }
+        # final-review finding 2：abort / provider-error 的中止 attempt 必须标 failed（保留
+        # 已收集的局部文本），不能因为 agent_end isTerminal 到达就误报 success（空摘要）。
+        failed_reason = terminal_outcome.get("failed_reason")
+        if failed_reason:
+            return build_attempt_result(
+                status="failed",
+                content=collected["text"],
+                run_dir=run_dir,
+                react_trace=collected["react_trace"],
+                iterations=state.iter,
+                metrics=metrics,
+                pi_meta=pi_meta,
+                reason=failed_reason,
+            )
         return build_attempt_result(
             status="success",
             content=collected["text"],
@@ -704,12 +828,7 @@ class SessionService:
             react_trace=collected["react_trace"],
             iterations=state.iter,
             metrics=metrics,
-            pi_meta={
-                "session_file": (self._pi_sessions.get(session_id) or {}).get("session_file"),
-                "pi_session_id": session_id,
-                "entry_ids": collected["entry_ids"],
-                "tool_call_ids": collected["tool_call_ids"],
-            },
+            pi_meta=pi_meta,
         )
 
     async def _run_with_reliability(
@@ -1013,3 +1132,7 @@ class SessionService:
         if attempt.status == AttemptStatus.COMPLETED:
             return attempt.summary or "Strategy execution completed."
         return f"Execution failed: {attempt.error or 'unknown error'}"
+
+
+
+

@@ -83,6 +83,9 @@ class PiSidecarClient:
         # handler 自身的 reopen 请求，避免自我等待死锁）。
         self._restart_fut: asyncio.Future | None = None
         self._restart_task: asyncio.Task | None = None
+        # final-review finding 5：记录上次 spawn 的合并进程 env，供 service 判断
+        # provider/model 环境变更 → 有意重启 sidecar 重新解析模型（respawn）。
+        self._spawn_env: dict[str, str] | None = None
 
     # ---------- lifecycle ----------
 
@@ -97,6 +100,11 @@ class PiSidecarClient:
     def unavailable(self) -> bool:
         return self._unavailable
 
+    @property
+    def spawn_env(self) -> dict[str, str] | None:
+        """final-review finding 5：上次 spawn 的进程 env（副本），供 service 判断环境变更。"""
+        return dict(self._spawn_env) if self._spawn_env else None
+
     async def start(self) -> None:
         await self._spawn()
 
@@ -108,6 +116,7 @@ class PiSidecarClient:
             env["VIBE_PI_AGENT_DIR"] = str(self._agent_dir)
         if self._sessions_dir:
             env["VIBE_PI_SESSIONS_DIR"] = str(self._sessions_dir)
+        self._spawn_env = dict(env)  # final-review finding 5：记录本次 spawn 的进程 env
         try:
             self._proc = await asyncio.create_subprocess_exec(
                 *self._command,
@@ -184,6 +193,42 @@ class PiSidecarClient:
         if fut is not None and not fut.done():
             fut.set_result(True)
 
+    async def respawn(self) -> None:
+        """有意重启 sidecar（final-review finding 5：provider/model env 变更触发）。
+
+        不消耗崩溃重启预算、不 mark_unavailable。调用方保证此刻无 in-flight 请求
+        （service 仅在无其它活跃 attempt 时调用）。清空 _active_sessions——重启后各会话
+        由下一次 attempt 的 open_session 惰性重开（且先重发 tool manifest，保证新会话
+        customTools 绑定），避免本方法里 reopen 出空 manifest 的会话。
+        """
+        if self._unavailable or self._proc is None:
+            return
+        self._ready = False
+        self._active_sessions.clear()
+        self._reject_all(SidecarError("sidecar_restarted", "client respawned for settings change"))
+        if self._proc.stdin is not None:
+            self._proc.stdin.close()
+        proc = self._proc
+        self._proc = None
+        for task in (self._reader_task, self._stderr_task):
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+        self._reader_task = None
+        self._stderr_task = None
+        if proc is not None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await proc.wait()
+            except Exception:  # noqa: BLE001
+                pass
+        await self._spawn()
     # ---------- request/response ----------
 
     async def request(self, op: str, params: dict, *, timeout: float = 30.0) -> dict:
@@ -413,3 +458,4 @@ class PiSidecarClient:
         self._restart_fut = None
         if fut is not None and not fut.done():
             fut.set_result(True)
+
