@@ -2,7 +2,8 @@
 
 设计约束（design §Idempotency）：崩溃最多重启一次并重开活跃 JSONL 会话；
 in-flight 请求以 sidecar_restarted 报错（不重放）；重启预算耗尽 → 所有请求
-永久 pi_sidecar_unavailable。stdout 是唯一协议流，stderr 逐行写日志。
+永久 pi_sidecar_unavailable。stdout 是唯一协议流；stderr 必须持续 drain
+（否则撑满管道缓冲会阻塞 sidecar），仅保留有界尾部供调试，绝不进入协议流。
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
@@ -68,6 +70,8 @@ class PiSidecarClient:
         self._seq = 0
         self._splitter = LineSplitter()
         self._reader_task: asyncio.Task | None = None
+        self._stderr_task: asyncio.Task | None = None
+        self._stderr_tail: deque[str] = deque(maxlen=200)
         self._ready = False
         self._unavailable = False
         self._stopping = False
@@ -111,6 +115,15 @@ class PiSidecarClient:
             self._mark_unavailable(exc)
             raise SidecarError("pi_sidecar_unavailable", f"spawn failed: {exc}") from exc
         self._reader_task = asyncio.get_running_loop().create_task(self._read_loop())
+        # 重开路径（_handle_process_loss → _spawn）：先收掉旧进程的 stderr 任务，
+        # 避免旧 pipe 的 readline 悬挂到 loop 关闭（与 stop() 的取消卫生一致）。
+        if self._stderr_task is not None:
+            self._stderr_task.cancel()
+            try:
+                await self._stderr_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        self._stderr_task = asyncio.get_running_loop().create_task(self._stderr_drain_loop())
         try:
             await asyncio.wait_for(self._wait_ready(), timeout=READY_TIMEOUT_S)
         except (asyncio.TimeoutError, SidecarError) as exc:
@@ -141,6 +154,13 @@ class PiSidecarClient:
                 await self._reader_task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+        if self._stderr_task is not None:
+            self._stderr_task.cancel()
+            try:
+                await self._stderr_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            self._stderr_task = None
         if proc is not None:
             # 断开 stdin 写管道让 subprocess transport 在 loop 存活时完成收尾，
             # 避免 loop 关闭后 transport 被 GC 触发 "Event loop is closed" unraisable
@@ -213,6 +233,31 @@ class PiSidecarClient:
             logger.warning("sidecar reader crashed: %s", exc)
         if not self._stopping:
             await self._handle_process_loss(SidecarError("internal", "sidecar exited"))
+
+    # ---------- stderr drain ----------
+
+    @property
+    def stderr_tail(self) -> list[str]:
+        """最近有界的 sidecar stderr 诊断行（调试用；stderr 绝不进入协议流）。"""
+        return list(self._stderr_tail)
+
+    async def _stderr_drain_loop(self) -> None:
+        """持续排空 sidecar stderr，防止撑满管道缓冲（64KB）反向阻塞 sidecar。
+
+        仅保留最近 maxlen 行（deque 有界），进程退出/EOF 即自然结束。
+        """
+        proc = self._proc
+        assert proc is not None and proc.stderr is not None
+        try:
+            while True:
+                line = await proc.stderr.readline()
+                if not line:
+                    break
+                self._stderr_tail.append(line.decode("utf-8", "replace").rstrip("\r\n"))
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("sidecar stderr drain crashed: %s", exc)
 
     def _dispatch_frame(self, line: str) -> None:
         try:
@@ -290,6 +335,13 @@ class PiSidecarClient:
         self._reject_all(SidecarError("sidecar_restarted", f"{cause}; in-flight request not replayed"))
         if self._proc is not None and self._proc.stdin is not None:
             self._proc.stdin.close()  # 断开写管道，transport 及时收尾（避免 loop 关闭后 GC unraisable）
+        if self._stderr_task is not None:
+            self._stderr_task.cancel()
+            try:
+                await self._stderr_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            self._stderr_task = None
         if self._restarts_used >= self._max_restarts:
             self._mark_unavailable(cause)
             return

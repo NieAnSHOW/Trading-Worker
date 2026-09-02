@@ -55,6 +55,27 @@ class TestBasics:
 
         asyncio.run(run())
 
+    def test_chatty_stderr_drained_and_bounded(self):
+        """stderr 不 drain 会撑满 64KB 管道缓冲反向阻塞 sidecar（start/request 挂起）。
+
+        桩先写 5000 行诊断（≈230KB，远超管道缓冲）再发 ready；drain 正常则
+        start()/request() 完成，尾部有界（deque maxlen=200）且不含协议污染。
+        """
+
+        async def run():
+            c = PiSidecarClient(command=_command(), env={"STUB_CHATTY_STDERR": "5000"})
+            await c.start()
+            try:
+                assert await c.request("ping", {}) == {"pong": True, "protocol": 1}
+            finally:
+                await c.stop()
+            tail = c.stderr_tail
+            assert len(tail) <= 200
+            assert tail[-1] == "diag line 4999: sidecar diagnostics lorem ipsum"
+            assert tail[0] == "diag line 4800: sidecar diagnostics lorem ipsum"
+
+        asyncio.run(run())
+
 
 class TestHostRequests:
     def test_inbound_host_request_dispatched_and_response_framed(self):

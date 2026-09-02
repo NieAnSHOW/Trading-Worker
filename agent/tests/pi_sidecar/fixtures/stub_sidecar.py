@@ -5,6 +5,8 @@ env 控制行为：
   STUB_SEND_HOST_REQ=<op>  处理完第 1 个请求后，向 stdout 发出一个入站 host 请求
                            （op ∈ tool_invoke/memory_context），并校验收到的响应帧
   VIBE_TEST_ENV_MARKER     原样回显进 ready 帧 sdk 字段（B6：env 透传断言）
+  STUB_CHATTY_STDERR=<n>   在发 ready 帧前向 stderr 写 n 行诊断（默认 0）；
+                           总量超过 64KB 管道缓冲，验证 client 持续 drain stderr
 """
 
 from __future__ import annotations
@@ -19,6 +21,11 @@ def main() -> None:
     crash_after = int(os.environ.get("STUB_CRASH_AFTER", "0"))
     send_host_req = os.environ.get("STUB_SEND_HOST_REQ", "")
     marker = os.environ.get("VIBE_TEST_ENV_MARKER", "stub")
+    chatty = int(os.environ.get("STUB_CHATTY_STDERR", "0"))
+    if chatty:
+        for i in range(chatty):
+            print(f"diag line {i}: sidecar diagnostics lorem ipsum", file=sys.stderr)
+        sys.stderr.flush()  # 确保写满管道前 client 必须持续 drain，否则本进程在此阻塞
     out = sys.stdout
     out.write(encode_frame({"v": 1, "event": "ready", "data": {"protocol": 1, "pid": os.getpid(), "sdk": marker}}))
     out.flush()
