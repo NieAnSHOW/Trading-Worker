@@ -289,6 +289,12 @@ export class PiSessionDriver implements SessionDriver {
   }
 
   async open(vibeId: string): Promise<SessionLike> {
+    // Task 17 集成实证：restart 自动重开后，client 对同一会话再发 open_session
+    // 会二次 createAgentSession 同一 JSONL → SDK 竞态
+    // "Agent \"Main\" was replaced during session initialization"（间歇性）。
+    // 已开会话幂等返回现有 handle（open 语义 = resume，重复 open 是 no-op）。
+    const existing = this.handles.get(vibeId);
+    if (existing) return existing;
     const p = this.index.resolve(vibeId);
     if (!p) throw Object.assign(new Error(`session ${vibeId} not found`), { code: "not_found" });
     const sm = await SessionManager.open(p);

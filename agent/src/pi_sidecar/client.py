@@ -76,6 +76,13 @@ class PiSidecarClient:
         self._unavailable = False
         self._stopping = False
         self._active_sessions: set[str] = set()
+        # Task 17 集成实证：崩溃后 reader 任务与并发 request 可能各自触发
+        # _handle_process_loss —— 双开 SDK 会话（agent "Main"）会抛
+        # "Agent was replaced during session initialization"。single-flight：
+        # 只允许一个 restart/reopen 在跑；其余调用等待它完成（按任务身份区分
+        # handler 自身的 reopen 请求，避免自我等待死锁）。
+        self._restart_fut: asyncio.Future | None = None
+        self._restart_task: asyncio.Task | None = None
 
     # ---------- lifecycle ----------
 
@@ -171,6 +178,11 @@ class PiSidecarClient:
             except Exception:  # noqa: BLE001
                 pass
         self._reject_all(SidecarError("internal", "client stopped"))
+        self._restart_task = None
+        fut = self._restart_fut
+        self._restart_fut = None
+        if fut is not None and not fut.done():
+            fut.set_result(True)
 
     # ---------- request/response ----------
 
@@ -181,6 +193,14 @@ class PiSidecarClient:
             await self._handle_process_loss(SidecarError("internal", "sidecar not running"))
             if self._unavailable:
                 raise SidecarError("pi_sidecar_unavailable", "sidecar restart budget exhausted")
+        if self._restart_fut is not None and self._restart_task is not asyncio.current_task():
+            # restart/reopen 仍在跑（reader 或并发 request 触发）：等它完成再发请求，
+            # 避免与 reopen 并发 open_session 双开 SDK 会话（agent "Main" 被替换）。
+            # handler 自身的 reopen 请求（_restart_task 身份）不等待，避免自锁。
+            try:
+                await asyncio.shield(self._restart_fut)
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         self._seq += 1
         req_id = f"r-{self._seq}"
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -331,6 +351,23 @@ class PiSidecarClient:
     async def _handle_process_loss(self, cause: SidecarError) -> None:
         if self._stopping:
             return
+        if self._restart_fut is not None:
+            if asyncio.current_task() is self._restart_task:
+                # handler 自身重入（_spawn 失败路径再次进入）：沿用已登记的
+                # single-flight，不重复登记，直接走下方预算判定（restarts_used
+                # 已计入本次重启，重入即意味着本次重启失败）。
+                pass
+            else:
+                # 已有 restart/reopen 在跑（reader 或并发 request 触发）：等待其
+                # 完成，不再重复重启——并发处理会耗尽重启预算并双开 SDK 会话。
+                try:
+                    await asyncio.shield(self._restart_fut)
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+                return
+        else:
+            self._restart_fut = asyncio.get_running_loop().create_future()
+            self._restart_task = asyncio.current_task()
         self._ready = False
         self._reject_all(SidecarError("sidecar_restarted", f"{cause}; in-flight request not replayed"))
         if self._proc is not None and self._proc.stdin is not None:
@@ -359,8 +396,20 @@ class PiSidecarClient:
                 await self.request("open_session", {"session_id": session_id}, timeout=READY_TIMEOUT_S)
             except SidecarError as exc:
                 logger.error("reopen session %s after restart failed: %s", session_id, exc)
+        # 成功路径结束：解除 single-flight，唤醒等待中的并发请求/处理者。
+        # 失败路径（预算耗尽 / spawn 失败）已 mark_unavailable，fut 无需清理。
+        self._restart_task = None
+        fut = self._restart_fut
+        self._restart_fut = None
+        if fut is not None and not fut.done():
+            fut.set_result(True)
 
     def _mark_unavailable(self, cause: Exception) -> None:
         self._unavailable = True
         self._ready = False
         self._reject_all(SidecarError("pi_sidecar_unavailable", f"sidecar unavailable: {cause}"))
+        self._restart_task = None
+        fut = self._restart_fut
+        self._restart_fut = None
+        if fut is not None and not fut.done():
+            fut.set_result(True)
