@@ -1,0 +1,13 @@
+{
+  "name": "vibe-pi-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "check:exports": "bun run scripts/check-sdk-exports.ts"
+  },
+  "dependencies": {
+    "@oh-my-pi/pi-coding-agent": "18.0.11"
+  }
+}
