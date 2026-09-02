@@ -95,6 +95,7 @@ class TestBasicFlow:
             )
             provider.start()
             events: list = []
+            tool_invokes: list = []
             reg = ToolRegistry()
             reg.register(Doubler())
             bridge = GatewayBridge(reg)
@@ -102,6 +103,7 @@ class TestBasicFlow:
             # B3 集成接线：host op → 按注册表分发（tool_invoke → GatewayBridge.handle_invoke）
             async def dispatch_host(op: str, params: dict) -> dict:
                 if op == "tool_invoke":
+                    tool_invokes.append(str(params.get("toolName")))
                     return await bridge.handle_invoke(params)
                 raise SidecarError("unknown_op", f"unhandled host op {op}")
 
@@ -109,11 +111,16 @@ class TestBasicFlow:
 
             async def main():
                 await c.start()
-                await c.request("new_session", {"session_id": SESSION})
+                # Task 16 修正：manifest 必须先于 new_session——SDK 在 createAgentSession 时
+                # 快照 customTools（toolBridge.customTools()），会话创建后再 set_tool_manifest
+                # 不会绑定（实测 "Tool doubler not found"，生产 service.py 首 attempt 同病）。
                 await c.request("set_tool_manifest", {"tools": manifest})
+                await c.request("new_session", {"session_id": SESSION})
                 await c.request("prompt", {"session_id": SESSION, "text": "double 21"})
                 final = await self._wait_terminal(c, SESSION, timeout=60)
                 assert final["content"] == "answer is 42"
+                # 工具调用真的穿过 Python gateway（而非 SDK 侧 unknown-tool 报错后脚本性继续）
+                assert tool_invokes == ["doubler"], f"tool_invoke must reach Python, got {tool_invokes}"
                 # SSE 事件含 tool_call 与 tool_result（形状与 glossary 一致）
                 names = [d.get("type") for ev, sid, d in events if ev == "session_event"]
                 assert "tool_execution_start" in names
