@@ -17,6 +17,14 @@ function host(): HostBridge {
  * anthropic-messages 用顶层 `system` 字段。仅这两种形状可注入；未知形状返回 undefined（请求原样）。
  */
 function withSystemPrompt(req: Record<string, unknown>, block: string): Record<string, unknown> | undefined {
+  // anthropic-messages 请求体同时含顶层 `system` 字段和 `messages` 会话数组 —— 必须先判 system，
+  // 否则会落入 openai 分支把块注入会话消息而非 system 字段（原实现顺序导致 anthropic 注入失效）。
+  if ("system" in req) {
+    const sys = req.system;
+    if (typeof sys === "string") return { ...req, system: `${sys}\n\n${block}` };
+    if (Array.isArray(sys)) return { ...req, system: [...sys, { type: "text", text: block }] };
+    return { ...req, system: block };
+  }
   const messages = req.messages;
   if (Array.isArray(messages)) {
     const next = [...messages];
@@ -28,12 +36,6 @@ function withSystemPrompt(req: Record<string, unknown>, block: string): Record<s
       next.unshift({ role: "system", content: block });
     }
     return { ...req, messages: next };
-  }
-  if ("system" in req) {
-    const sys = req.system;
-    if (typeof sys === "string") return { ...req, system: `${sys}\n\n${block}` };
-    if (Array.isArray(sys)) return { ...req, system: [...sys, { type: "text", text: block }] };
-    return { ...req, system: block };
   }
   return undefined;
 }

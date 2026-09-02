@@ -99,4 +99,72 @@ describe("vibe-memory extension", () => {
     expect(first).toContain("risk-rules");   // 第一请求注入
     expect(second).not.toContain("risk-rules"); // 同轮后续请求不重复注入
   });
+
+  // ---- 生产注入路径（真实事件形状）----
+  // 真实 SDK：{ type:"before_provider_request", payload:<请求体> }，handler 返回整体替换请求（runner: if(l!==void 0) s=l）。
+  // openai 请求体 = { model, messages }；anthropic = { model, system, messages }。
+  function setupTurn(block: string) {
+    diagnostics.length = 0;
+    (globalThis as Record<string, unknown>).__VIBE_HOST__ = makeHost({ memory_context: { block } });
+    return (async () => {
+      const mod = await import("./index");
+      const pi = makeFakePi();
+      mod.default(pi as never);
+      await pi.handlers["input"]({ text: "q" }, {});
+      await pi.handlers["before_agent_start"]({}, {});
+      return pi.handlers["before_provider_request"];
+    })();
+  }
+
+  test("production: openai dialect appends memory to system message (messages[0])", async () => {
+    const fire = await setupTurn("## memory\n- aaple rules");
+    const req = { model: "gpt-x", messages: [{ role: "system", content: "BASE" }, { role: "user", content: "hi" }] };
+    const out = await fire({ type: "before_provider_request", payload: req }, {});
+    expect(out).toBeDefined();
+    const messages = (out as { messages: Array<{ role: string; content: string }> }).messages;
+    expect(messages[0].role).toBe("system");
+    expect(messages[0].content).toBe("BASE\n\n## memory\n- aaple rules");
+    expect(messages[1].content).toBe("hi"); // 用户消息未被改动
+    // 不改动调用方数组（非变异契约）
+    expect(req.messages[0].content).toBe("BASE");
+  });
+
+  test("production: openai dialect unshifts system message when none present", async () => {
+    const fire = await setupTurn("M");
+    const out = await fire(
+      { type: "before_provider_request", payload: { model: "gpt-x", messages: [{ role: "user", content: "hi" }] } },
+      {},
+    );
+    const messages = (out as { messages: Array<{ role: string; content: string }> }).messages;
+    expect(messages[0]).toEqual({ role: "system", content: "M" });
+    expect(messages[1].content).toBe("hi");
+  });
+
+  test("production: anthropic dialect sets the top-level system field", async () => {
+    const fire = await setupTurn("## mem\n- rules");
+    const req = { model: "claude-x", system: "BASE", messages: [{ role: "user", content: "hi" }] };
+    const out = await fire({ type: "before_provider_request", payload: req }, {});
+    expect(out).toBeDefined();
+    const o = out as { system: string; messages: Array<{ role: string }> };
+    expect(o.system).toBe("BASE\n\n## mem\n- rules");
+    expect(o.messages).toEqual([{ role: "user", content: "hi" }]); // 会话消息不被注入
+  });
+
+  test("production: only the first provider request of a turn is injected", async () => {
+    const fire = await setupTurn("MEM");
+    const make = () => ({ type: "before_provider_request", payload: { model: "gpt-x", messages: [{ role: "user", content: "hi" }] } });
+    const first = await fire(make(), {});
+    const second = await fire(make(), {});
+    const firstMsg = (first as { messages: Array<{ role: string; content: string }> }).messages;
+    expect(firstMsg[0].role).toBe("system");
+    expect(firstMsg[0].content).toBe("MEM");
+    expect(second).toBeUndefined(); // 同轮第二请求原样返回（runner: void 0 → 不替换）
+  });
+
+  test("production: empty memory block is a no-op (request unchanged)", async () => {
+    const fire = await setupTurn("");
+    const req = { model: "gpt-x", messages: [{ role: "system", content: "BASE" }] };
+    const out = await fire({ type: "before_provider_request", payload: req }, {});
+    expect(out).toBeUndefined();
+  });
 });
