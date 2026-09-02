@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from src.agent.loop import AgentLoop
     from src.pi_sidecar.client import PiSidecarClient
     from src.pi_sidecar.gateway_bridge import GatewayBridge
+    from src.pi_sidecar.memory_bridge import MemoryBridge
 
 # Dedicated thread pool limited to four concurrent agents to avoid exhausting the default executor.
 _AGENT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="agent")
@@ -70,6 +71,25 @@ def _get_pi_client():
 
         _PI_CLIENT = PiSidecarClient(on_event=_on_pi_event, on_host_request=_on_pi_host_request)
     return _PI_CLIENT
+
+
+def _memory_bridge() -> "MemoryBridge":
+    """进程级 MemoryBridge 单例；PersistentMemory 不可用时走降级模式（design §Long-Term Memory）。"""
+    global _MEMORY_BRIDGE
+    try:
+        return _MEMORY_BRIDGE
+    except NameError:
+        _MEMORY_BRIDGE = None
+    if _MEMORY_BRIDGE is None:
+        from src.pi_sidecar.memory_bridge import MemoryBridge
+
+        try:
+            from src.memory.persistent import PersistentMemory
+
+            _MEMORY_BRIDGE = MemoryBridge(memory=PersistentMemory())
+        except Exception:  # noqa: BLE001 — design：memory 不可用 → degraded 继续
+            _MEMORY_BRIDGE = MemoryBridge(memory=None)
+    return _MEMORY_BRIDGE
 
 
 def _on_pi_event(event: str, session_id: str, data: Dict[str, Any]) -> None:
@@ -144,6 +164,14 @@ class SessionService:
         """host op `tool_invoke`（B5 注册表项）：按幂等键前缀还原 session_id。"""
         session_id = str(params.get("idempotencyKey", ":").split(":")[0] or "")
         return await self._pi_gateway_bridge(session_id).handle_invoke(params)
+
+    def register_memory_host_handlers(self) -> None:
+        """Task 14 调用：把四个 memory ops 挂进处理器注册表（幂等，setdefault 保序）。"""
+        bridge = _memory_bridge()
+        self._pi_host_handlers.setdefault("memory_context", bridge.handle_memory_context)
+        self._pi_host_handlers.setdefault("remember", bridge.handle_remember)
+        self._pi_host_handlers.setdefault("memory_search", bridge.handle_memory_search)
+        self._pi_host_handlers.setdefault("memory_remove", bridge.handle_memory_remove)
 
     def _pi_gateway_bridge(self, session_id: str) -> "GatewayBridge":
         """每会话 GatewayBridge 惰性缓存（registry 全局构建一次，单一 choke point）。"""
