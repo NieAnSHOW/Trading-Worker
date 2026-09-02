@@ -61,6 +61,50 @@ describe("PiSessionDriver construction", () => {
     }
   });
 
+  test("importMessages builds structurally valid AssistantMessage for assistant turns", async () => {
+    const { PiSessionHandle } = await import("./session-driver");
+    const dir = mkdtempSync(join(tmpdir(), "vibe-pidrv4-"));
+    try {
+      const idx = new SessionIndex(join(dir, "idx.json"), dir);
+      const captured: unknown[] = [];
+      const sm = {
+        appendMessage: (m: unknown) => {
+          captured.push(m);
+          return "entry1";
+        },
+        // 真实流程 ensureOnDisk 会落盘 session header（register 据此校验），fake 补齐
+        ensureOnDisk: async () => {
+          writeFileSync(join(dir, "sess1.json"), JSON.stringify({ type: "session", id: "abcd12345678" }));
+        },
+      };
+      const h = new PiSessionHandle("abcd12345678", join(dir, "sess1.json"), { sessionManager: sm }, idx);
+      const n = await h.importMessages([
+        { role: "user", content: "hi", timestamp: "2026-09-01T00:00:00Z" },
+        { role: "assistant", content: "hello back", timestamp: "2026-09-01T00:00:01Z" },
+      ]);
+      expect(n).toBe(2);
+
+      // user 路径保持原样（UserMessage.content 允许 string）
+      const userMsg = captured[0] as Record<string, unknown>;
+      expect(userMsg.role).toBe("user");
+      expect(userMsg.content).toBe("hi");
+
+      // assistant 路径：content 必须是内容块数组 + 必填元数据齐全
+      const asst = captured[1] as Record<string, unknown>;
+      expect(asst.role).toBe("assistant");
+      expect(Array.isArray(asst.content)).toBe(true);
+      expect(asst.content).toEqual([{ type: "text", text: "hello back" }]);
+      expect(asst.api).toBe("anthropic-messages");
+      expect(asst.provider).toBe("vibe-import");
+      expect(asst.model).toBe("imported");
+      expect(asst.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 });
+      expect(asst.stopReason).toBe("stop");
+      expect(typeof asst.timestamp).toBe("number");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("create produces session whose sessionFile lives under sessions dir and header id matches", async () => {
     const { PiSessionDriver } = await import("./session-driver");
     const dir = mkdtempSync(join(tmpdir(), "vibe-pidrv2-"));

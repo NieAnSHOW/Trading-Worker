@@ -116,3 +116,20 @@ summaryEntry?, sessionContext?, reopenAsk?, askReanswerCommitted?}>` — never a
 
 **Test command**: `cd pi-sidecar && bun test`
 **Output summary**: `41 pass / 0 fail / 96 expect() calls across 6 files` (~1.15s).
+
+## Fix 2: importMessages assistant shape
+
+**Change summary**: The assistant path of `importMessages` in `pi-sidecar/src/session-driver.ts` was appending a structurally invalid AssistantMessage — `content` was a plain string and the mandatory `api`/`provider`/`model`/`usage`/`stopReason` fields were absent. Per the pinned SDK d.ts, AssistantMessage.content MUST be a content-block array and those metadata fields are required; migrated turns would be corrupt for the driver's own read path and Pi-internal consumers (replay/compaction). Now the assistant branch wraps the string into a `[{ type: "text", text }]` block and fills mandatory metadata with deterministic synthetic values: `api: "anthropic-messages"`, `provider: "vibe-import"`, `model: "imported"`, `usage` zeroed (`{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0}`), `stopReason: "stop"`. Timestamps now parse the source `timestamp` when present (falling back to `Date.now()`); unparseable timestamps skip the message. The user path stays as-is (UserMessage.content legitimately accepts a plain string).
+
+**d.ts facts relied on** (pinned `@oh-my-pi/pi-ai/dist/types/types.d.ts` + `@oh-my-pi/pi-catalog/dist/types/types.d.ts`):
+- `AssistantMessage { role:"assistant"; content:(TextContent|ThinkingContent|…|ToolCall)[]; api:Api; provider:Provider; model:string; usage:Usage; stopReason:StopReason; timestamp:number; … }` (types.d.ts ~L742)
+- `TextContent { type:"text"; text:string }` (types.d.ts L501)
+- `StopReason = "stop"|"length"|"toolUse"|"error"|"aborted"` (types.d.ts L675)
+- `Api = KnownApi | (string & {})` (pi-catalog types.d.ts L5); `Provider = string` (L62)
+- `Usage { input; output; cacheRead; cacheWrite; totalTokens }` (pi-catalog types.d.ts L67)
+- `UserMessage { role:"user"; content:string | (TextContent|ImageContent)[] }` (types.d.ts L683) — user path valid as-is.
+
+**Test change**: `pi-sidecar/src/session-driver.test.ts` added a test that imports BOTH a user and an assistant message through a fake session manager (capturing `appendMessage` calls) and asserts the assistant payload has a content-block array (`[{type:"text",text:"hello back"}]`) plus all mandatory fields present; the user payload stays a plain string.
+
+**Test command**: `cd pi-sidecar && bun test`
+**Output summary**: `42 pass / 0 fail / 108 expect() calls across 6 files` (~0.74s).

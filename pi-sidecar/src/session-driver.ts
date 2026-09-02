@@ -173,13 +173,36 @@ export class PiSessionHandle implements SessionLike {
     await Bun.write(outPath, await Bun.file(this.sessionFile).text());
   }
 
+  /**
+   * 迁移导入：把来源会话的扁平消息落成合法 Pi AssistantMessage。
+   * SDK 的 AssistantMessage.content 必须是内容块数组（非裸字符串），且
+   * api/provider/model/usage/stopReason 为必填（见 pinned
+   * @oh-my-pi/pi-ai types.d.ts AssistantMessage）。导入源无法还原真实计费
+   * 与模型信息，故以确定性合成值填充：provider/model 标注导入来源，usage
+   * 归零，stopReason=stop。UserMessage.content 本身允许 string，保持原样。
+   */
   async importMessages(msgs: { role: string; content: string; timestamp?: string }[]): Promise<number> {
     const sm = this.s.sessionManager;
     if (!sm?.appendMessage) throw new Error("SessionManager appendMessage unavailable in pinned SDK");
     let n = 0;
     for (const m of msgs) {
       if (m.role !== "user" && m.role !== "assistant") continue;
-      sm.appendMessage({ role: m.role, content: m.content, timestamp: Date.now() });
+      const ts = m.timestamp ? Date.parse(m.timestamp) : Date.now();
+      if (Number.isNaN(ts)) continue;
+      const msg =
+        m.role === "assistant"
+          ? {
+              role: "assistant" as const,
+              content: [{ type: "text" as const, text: m.content }],
+              api: "anthropic-messages" as const,
+              provider: "vibe-import",
+              model: "imported",
+              usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+              stopReason: "stop" as const,
+              timestamp: ts,
+            }
+          : { role: "user" as const, content: m.content, timestamp: ts };
+      sm.appendMessage(msg);
       n += 1;
     }
     // 触发落盘 + 索引登记（design §Lazy migration: 同 ID Pi 会话；create() 已登记，此处幂等）
