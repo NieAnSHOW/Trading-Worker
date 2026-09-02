@@ -55,7 +55,8 @@ export function createMain(deps?: Partial<MainDeps>) {
     call: (op: string, params: Record<string, unknown> = {}) => hostRpc.call(op, params, 60_000),
     emitDiagnostic: (kind: string, message: string) => {
       process.stderr.write(`[vibe:${kind}] ${message}\n`); // stderr 永不混入协议流
-      writeOut(encodeFrame({ v: 1, event: "session_event", session_id: "", data: { type: "pi.notice", payload: { kind, message } } }));
+      // 全局诊断无会话上下文：不带 session_id（client 协议要求 session_id 非空字符串，"" 会被拒帧）
+      writeOut(encodeFrame({ v: 1, event: "session_event", data: { type: "pi.notice", payload: { kind, message } } }));
     },
   };
 

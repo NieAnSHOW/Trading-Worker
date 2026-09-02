@@ -58,7 +58,10 @@ export class PiSessionHandle implements SessionLike {
   }
 
   isBusy(): boolean {
-    return this.s.isStreaming?.() ?? false;
+    // pinned SDK 18.0.11：AgentSession.isStreaming 是 getter（boolean），非函数
+    // （agent-session.d.ts:270 `get isStreaming(): boolean`）。两种形态都兼容。
+    const v = this.s.isStreaming;
+    return typeof v === "function" ? v() : Boolean(v);
   }
 
   currentModel(): string | null {
@@ -241,15 +244,22 @@ export class PiSessionDriver implements SessionDriver {
 
   private async buildSession(vibeId: string, sessionManager: SessionManager, model: string | null): Promise<PiSessionHandle> {
     const sessionsDir = this.index.sessionsDir;
+    // B6：client._spawn 注入的 VIBE_PI_AGENT_DIR（集成测试隔离到 tmp；生产未设 → 常量）。
+    const agentDir = this.opts.env?.VIBE_PI_AGENT_DIR?.trim() || PI_AGENT_DIR;
     const result = await createAgentSession({
       cwd: sessionsDir,
-      agentDir: PI_AGENT_DIR,
+      agentDir,
       settings: Settings.isolated(),
       sessionManager,
       extensions: this.opts.extensions as never[],
       customTools: this.opts.toolBridge.customTools() as never[],
       toolNames: [], // Global Constraint: 内建 read/write/edit/bash 全禁用
-      restrictToolNames: true,
+      // pinned SDK 18.0.11（Task 16 实证）：restrictToolNames=true 会把整个会话置于
+      // "restricted" 模式——内联 extensions（vibe-providers/vibe-memory）与
+      // preloadedPreparedExtensions 一律不装载（session 装配 `if (Tn) Dp=loadExtensions([])`）。
+      // 工具禁用由 toolNames:[] 单独保证（实测 _tools 为空）；restrictToolNames 必须
+      // false 才能让 provider 注册 + memory 注入 extension 生效（生产 model wiring 依赖它）。
+      restrictToolNames: false,
       allowRestrictedCustomTools: true,
       enableMCP: false,
       enableLsp: false,

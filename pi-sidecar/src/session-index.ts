@@ -5,6 +5,17 @@ import { dirname, join } from "node:path";
 export const DEFAULT_SESSIONS_DIR = join(homedir(), ".vibe-trading", "pi", "sessions");
 export const DEFAULT_INDEX_PATH = join(homedir(), ".vibe-trading", "pi", "session-index.json");
 
+/** B6：client._spawn 注入的 VIBE_PI_SESSIONS_DIR（集成测试隔离到 tmp，生产未设 → 常量）。 */
+export function resolveSessionsDir(env: NodeJS.ProcessEnv = process.env): string {
+  return env.VIBE_PI_SESSIONS_DIR?.trim() || DEFAULT_SESSIONS_DIR;
+}
+
+/** 索引文件与 sessions 目录同级（生产布局 ~/.vibe-trading/pi/{sessions,session-index.json}）。 */
+export function resolveIndexPath(env: NodeJS.ProcessEnv = process.env): string {
+  const dir = env.VIBE_PI_SESSIONS_DIR?.trim();
+  return dir ? join(dir, "..", "session-index.json") : DEFAULT_INDEX_PATH;
+}
+
 const VIBE_ID_RE = /^[0-9a-f]{12}$/;
 
 export function isValidVibeSessionId(id: string): boolean {
@@ -42,8 +53,8 @@ export class SessionIndex {
   private map: Record<string, IndexedSession>;
 
   constructor(
-    private readonly indexPath = DEFAULT_INDEX_PATH,
-    private readonly _sessionsDir = DEFAULT_SESSIONS_DIR,
+    private readonly indexPath = resolveIndexPath(),
+    private readonly _sessionsDir = resolveSessionsDir(),
   ) {
     try {
       const raw = JSON.parse(readFileSync(this.indexPath, "utf8")) as Record<string, IndexedSession | string>;
