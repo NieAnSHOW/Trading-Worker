@@ -6,6 +6,7 @@ tool_result.preview 正则匹配）逐字段依赖这些 payload 形状，不得
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -14,6 +15,20 @@ from src.tools.redaction import redact_payload, redact_log_text
 PREVIEW_CHARS = 200
 THINKING_DONE_CHARS = 500
 COMPACT_SUMMARY_CHARS = 200
+
+#: sessions_routes 派生 mandate.proposal / live.action 帧所用的同款 relay 正则
+#: （agent/src/api/sessions_routes.py 的 `_PROPOSAL_ID_RE` / `_LIVE_ACTION_ID_RE`）。
+#: 预览窗口按这些锚点构造，保证 relay id 必在 preview 内；改动必须与
+#: sessions_routes 保持同步。
+_PROPOSAL_ID_RE = re.compile(r'"proposal_id"\s*:\s*"(mp_[0-9a-f]{32})"')
+_LIVE_ACTION_ID_RE = re.compile(r'"audit_id"\s*:\s*"(la_[0-9a-zA-Z]+)"')
+
+#: 锚段上下文余量：audit 段向前 30 字符容纳 `"live_action": {` 前缀（live.action
+#: 派生同时要求 '"live_action"' 出现在 preview），向后 40 字符保留记录后续字段；
+#: proposal 段向后 20 字符。两锚段加 2 个 '...' 分隔符最坏 197 字符 ≤ PREVIEW_CHARS。
+_AUDIT_CTX_BEFORE = 30
+_AUDIT_CTX_AFTER = 40
+_PROPOSAL_CTX_AFTER = 20
 
 
 class NormState:
@@ -62,18 +77,44 @@ def _result_text(payload: dict) -> str:
 
 
 def _result_preview(text: str) -> str:
-    """Redact 全文后保留 ≤PREVIEW_CHARS 的头尾窗口。
+    """Redact 全文后构造 ≤PREVIEW_CHARS 预览，保证 relay id 必在其中。
 
     sessions_routes 用正则从 tool_result.preview 派生 mandate.proposal 与
-    live.action 帧：propose 工具 JSON 的 proposal_id 位于头部，order-guard
-    结果末尾嵌入的 live_action 记录（audit_id）位于尾部——纯头部截断（legacy
-    result[:200]）会丢尾部标识符，故头尾各保留一段。
+    live.action 帧：propose 工具 JSON 的 proposal_id（mp_…）位于头部，而
+    order-guard 结果末尾嵌入的 live_action 记录中 audit_id（la_…）是记录
+    首键、距 JSON 末尾可达数百字符（broker 转发内容与记录其余字段在其后）
+    ——固定头尾窗口（legacy result[:200] / head+tail）会让 id 落在两窗之外，
+    relay 静默失效。这里按 sessions_routes 同款正则锚定首个 mp_ 与末个
+    la_，拼出含全部命中 id 的窗口（'...' 分隔，id 永不截断）；无命中时
+    回退头尾窗口。relay id 优先于头部上下文，头部吃剩余预算。
     """
-    redacted = redact_log_text(text)
+    # redact_log_text 默认 limit=2000 会截尾，导致长结果的 live_action 记录
+    # 在窗口化前就丢失；预览需要全文锚定，limit 放宽到文本全长（redaction 对
+    # JSON 结构只缩不扩，+2048 仅容 default=str 的少量膨胀）。
+    redacted = redact_log_text(text, limit=max(2000, len(text) + 2048))
     if len(redacted) <= PREVIEW_CHARS:
         return redacted
-    head_len = PREVIEW_CHARS - 3 - 77  # 尾部 77 字符容纳 `"live_action": {"audit_id": "la_…"`
-    return redacted[:head_len] + "..." + redacted[-77:]
+
+    proposal = _PROPOSAL_ID_RE.search(redacted)
+    audits = list(_LIVE_ACTION_ID_RE.finditer(redacted))
+    audit = audits[-1] if audits else None
+
+    if proposal is None and audit is None:
+        head_len = PREVIEW_CHARS - 3 - 77  # 尾部 77 字符容纳 `"live_action": {"audit_id": "la_…"`
+        return redacted[:head_len] + "..." + redacted[-77:]
+
+    core: list[str] = []
+    if audit is not None:
+        start = max(0, audit.start() - _AUDIT_CTX_BEFORE)
+        end = min(len(redacted), audit.end() + _AUDIT_CTX_AFTER)
+        core.append(redacted[start:end])
+    if proposal is not None:
+        end = min(len(redacted), proposal.end() + _PROPOSAL_CTX_AFTER)
+        core.append(redacted[proposal.start() : end])
+
+    core_chars = sum(len(seg) for seg in core)
+    head_chars = max(0, PREVIEW_CHARS - core_chars - 3 * len(core))
+    return "...".join([redacted[:head_chars], *core])
 
 
 def normalize_event(pi_type: str, payload: dict, *, state: NormState) -> list[tuple[str, dict]]:

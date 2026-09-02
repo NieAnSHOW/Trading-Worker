@@ -1,6 +1,7 @@
 """事件归一化单测：Pi 事件 → 完整 Vibe glossary（recon §Event name glossary）。"""
 
 import json
+import re
 
 from src.pi_sidecar.events import NormState, normalize_event
 
@@ -105,6 +106,101 @@ def test_tool_execution_end_maps_to_tool_result_with_redacted_preview():
     assert data["elapsed_ms"] >= 0
     assert len(data["preview"]) <= 200
     assert "la_abc123" in data["preview"]  # sessions_routes 依赖 preview 匹配派生 mandate/live 帧
+
+
+def test_tool_result_preview_keeps_relay_audit_id_far_from_both_ends():
+    """真实几何（order-guard）：broker 转发内容 >400 字符，audit_id 距 JSON 末尾
+    >200 字符（记录其余字段在其后）——旧固定头尾窗口两窗皆丢 id；锚点窗口必须仍
+    让 sessions_routes 的 live.action 派生正则（'\"live_action\"' + audit_id）命中。
+    """
+    st = NormState()
+    st.iter = 1
+    st.tool_started["c1"] = 1000.0
+    record = {
+        "audit_id": "la_" + "f" * 32,
+        "ts": "2026-09-02T00:00:00.000Z",
+        "session_id": "s-1001",
+        "kind": "order_placed",
+        "intent_normalized": "buy 3 NVDA @ market",
+        "mandate_snapshot_ref": "md_1001",
+        "consent_record_ref": "cr_1001",
+        "broker_request": {"symbol": "NVDA", "qty": 3, "order_type": "market", "time_in_force": "day"},
+        "broker_response": {
+            "order_id": "ORD-1001",
+            "status": "accepted",
+            "filled_qty": 3,
+            "avg_price": 126.55,
+            "commission": 0.0,
+        },
+        "outcome": "accepted",
+        "gate_decision": {
+            "allowed": True,
+            "checked_limits": ["max_order_usd", "daily_trade_cap", "max_positions", "instrument_allowlist"],
+        },
+        "server": "robinhood",
+        "remote_tool": "place_order",
+        "error": None,
+    }
+    body = json.dumps(
+        {"status": "ok", "forward": "broker forward " + "payload " * 60, "live_action": record},
+        ensure_ascii=False,
+    )
+    audit_pos = body.index('"audit_id"')
+    assert len(body) - audit_pos > 200  # 距末尾超 200：旧 77 字符尾窗必丢
+    assert audit_pos > 120  # 也不在旧头部窗口内
+
+    out = normalize_event(
+        "tool_execution_end",
+        {
+            "toolName": "order_guard",
+            "toolCallId": "c1",
+            "isError": False,
+            "result": {"content": [{"type": "text", "text": body}]},
+        },
+        state=st,
+    )
+    name, data = out[0]
+    assert name == "tool_result"
+    assert len(data["preview"]) <= 200
+    # sessions_routes 同款 relay 正则必须在 preview 命中（live.action 派生）
+    assert re.search(r'"audit_id"\s*:\s*"(la_[0-9a-zA-Z]+)"', data["preview"])
+    assert '"live_action"' in data["preview"]
+    assert "la_" + "f" * 32 in data["preview"]
+
+
+def test_tool_result_preview_keeps_relay_proposal_id_mid_document():
+    """真实几何（propose）：长结果中 proposal_id 位于 >200 字符处时，锚点窗口
+    仍让 sessions_routes 的 mandate.proposal 派生正则命中。"""
+    st = NormState()
+    st.iter = 1
+    st.tool_started["c1"] = 1000.0
+    proposal_id = "mp_" + "a" * 32
+    body = json.dumps(
+        {
+            "type": "mandate.proposal",
+            "preamble": "context " * 60,  # 把 proposal_id 推到文档中部
+            "proposal_id": proposal_id,
+            "profiles": [{"ordinal": i, "name": "profile"} for i in range(5)],
+        },
+        ensure_ascii=False,
+    )
+    assert body.index('"proposal_id"') > 200
+
+    out = normalize_event(
+        "tool_execution_end",
+        {
+            "toolName": "propose_mandate_profiles",
+            "toolCallId": "c1",
+            "isError": False,
+            "result": {"content": [{"type": "text", "text": body}]},
+        },
+        state=st,
+    )
+    name, data = out[0]
+    assert name == "tool_result"
+    assert len(data["preview"]) <= 200
+    assert re.search(r'"proposal_id"\s*:\s*"(mp_[0-9a-f]{32})"', data["preview"])
+    assert proposal_id in data["preview"]
 
 
 def test_tool_execution_update_maps_to_tool_progress():
