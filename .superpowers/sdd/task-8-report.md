@@ -1,111 +1,65 @@
-# Task 8 Report: Bounded Result Cache And Provider Health
+# Task 8 Report — Python Gateway Bridge
 
-## Status: DONE
+Commit: `8bbe2bab` `feat(pi-sidecar): gateway bridge with idempotency + parallel reads/serial writes` (DCO sign-off, no AI trailers)
 
 ## What was implemented
 
-### 1. `agent/src/reliability/cache.py` — `ResultCache`
+`agent/src/pi_sidecar/gateway_bridge.py` (204 lines, new) + `agent/tests/pi_sidecar/test_gateway_bridge.py` (216 lines, new), per the task-8 brief:
 
-Bounded LRU cache for read-only `StepResult`s. Sits in front of tool invocation in the reliability path only; does NOT touch `agent/src/providers/` loader caches.
-
-**Interface (verbatim from brief):**
-```python
-class ResultCache:
-    def get(self, key: str, *, now: datetime | None = None) -> StepResult | None: ...
-    def put(self, key: str, result: StepResult, *, ttl_seconds: float) -> None: ...
-```
-
-### 2. `agent/src/reliability/providers.py` — `ProviderHealth`
-
-Per-provider consecutive-failure counter with bounded circuit and fallback selection.
-
-**Interface (verbatim from brief):**
-```python
-class ProviderHealth:
-    def record_success(self, provider: str, elapsed_ms: int) -> None: ...
-    def record_failure(self, provider: str, code: ErrorCode) -> None: ...
-    def choose_fallback(self, provider: str, candidates: Sequence[str]) -> str | None: ...
-```
-
-### 3. Gateway integration (`agent/src/reliability/gateway.py`)
-
-Added optional `cache` and `health` params to `ToolGateway.__init__`. When provided:
-- Cache check after schema validation, before execution (read-only tools only).
-- Telemetry events: `cache_hit` / `cache_miss` via `counters.record_reliability_event`.
-- Health recording after execution: success resets failures, failure increments.
-- Successful read-only results cached with a 300s TTL.
-
-When cache/health are None (default), behavior is identical to before — existing loader caches and the off-path are completely untouched.
-
-## Eviction policy
-
-**LRU via `OrderedDict`.** On `get` hit, `move_to_end` promotes recency. On `put`, if size exceeds `max_size` (default 128), `popitem(last=False)` evicts the oldest entry. Simplest correct LRU using stdlib only.
-
-## Key-normalization design
-
-Caller passes a JSON string key. The cache re-parses it and re-serializes with `sort_keys=True` at all depths (`json.dumps(parsed, sort_keys=True)`). This makes `{"b":2,"a":1}` and `{"a":1,"b":2}` map to the same entry. Non-JSON keys pass through unchanged. The gateway builds keys as `json.dumps({"tool": tool_name, "args": arguments})`, so ordering independence is automatic.
-
-## Monotonic expiry + test injection
-
-Each entry stores two clocks at insertion:
-- `mono_inserted`: `time.monotonic()` — used in production (`now=None`).
-- `wall_inserted`: `datetime.now().timestamp()` — used when `get(now=...)` is injected.
-
-This avoids wall-clock drift in production while allowing tests to inject `datetime` values without sleeping. The `put` method has no `now` param (per the fixed interface); tests inject time solely through `get`.
-
-## How `_is_side_effecting` was reused
-
-The cache does NOT re-derive the side-effecting classification. Instead:
-1. **Result-level defense**: `put` refuses any `StepResult` with `status == UNSAFE_ERROR` or `error.code == UNSAFE_SIDE_EFFECT`.
-2. **Key-level defense**: imports `_SIDE_EFFECTING_NAMES` and `_SIDE_EFFECTING_NAME_PREFIXES` from `gateway.py` and checks the normalized key string against them. Conservative: any key containing `trading_` or `bash` is refused.
-3. **Caller-level defense**: the gateway integration checks `_is_side_effecting(tool_name, tool)` and only calls `cache.put` for read-only `SUCCESS` results.
-
-Triple defense ensures side-effecting results are never cached.
-
-## Files changed
-
-| File | Action |
-|------|--------|
-| `agent/src/reliability/cache.py` | Created (ResultCache) |
-| `agent/src/reliability/providers.py` | Created (ProviderHealth) |
-| `agent/tests/test_reliability_cache.py` | Created (14 tests) |
-| `agent/tests/test_reliability_providers.py` | Created (8 tests) |
-| `agent/src/reliability/gateway.py` | Modified (optional cache/health integration, +63 lines) |
+- `build_gateway_policy(allowed_names)` — cross-task contract: `GatewayPolicy(allowed_tools=..., retry_limit=2, fallback_tools={}, timeout_seconds=1800.0, allow_side_effects=True)`.
+- `GatewayBridge(registry, *, gateway=None, max_parallel_reads=4, now=time.monotonic)` — the host-side `tool_invoke` handler:
+  - **Idempotency**: key = `idempotencyKey` (`session_id:assistantEntryId:toolCallId`); completed duplicates replay the recorded `{content, isError, outcome}` without re-executing. Error and `outcome_unknown` results are recorded too, so a re-sent write call returns the unknown envelope (never re-executes, prompting state verification per Global Constraint).
+  - **Concurrency**: read-only calls bounded by `asyncio.Semaphore(max_parallel_reads)` + `run_in_executor` (parallel); side-effecting calls under `asyncio.Lock` (strictly serial). Side-effecting calls are never auto-retried — retry/fallback only flow through the gateway's existing read-only recovery (`retry_limit=2` in the policy).
+  - **Routing**: the only execution path is `gw.execute(tool_name, args, step_id=..., policy=build_policy(), session_id=...)` — every tool execution passes through `ToolGateway` (mandate/order-gate/kill-switch/safety classification untouched; no bypass). `ToolGateway(registry)` is built lazily when no gateway is injected.
+  - **Failure semantics**: write-class (`side_effecting=True`) connection/process failure, timeout, or cancellation → `outcome:"outcome_unknown"`, `isError:true` (never fabricated); read-only → `outcome:"error"`. Timeout enforced via `asyncio.wait_for` with the manifest's `timeout_seconds`.
+  - **Output hygiene**: `StepResult`/dict → `to_wire()` → `redact_payload()` (src.tools.redaction) → JSON, truncated to `TOOL_RESULT_LIMIT` = 10000 chars with `[truncated]` marker, before returning to Pi.
+  - `handle_cancel(call_id)` — no-op on unknown call ids (interface contract; `_pending` wiring per plan).
+  - Manifest fields (`is_readonly`/`side_effecting`/`repeatable`/`timeout_seconds`) consumed from `tool_invoke` params, with registry-derived fallback via `_tool_meta`.
 
 ## TDD evidence
 
-**RED** (before implementation):
-```
-ModuleNotFoundError: No module named 'src.reliability.cache'
-ModuleNotFoundError: No module named 'src.reliability.providers'
-2 errors during collection
-```
-
-**GREEN** (after implementation):
-```
-agent/tests/test_reliability_cache.py agent/tests/test_reliability_providers.py: 22 passed
-```
-
-## Step 5 regression output
+**RED** (`pytest agent/tests/pi_sidecar/test_gateway_bridge.py --tb=short -q`):
 
 ```
-pytest agent/tests/test_reliability_cache.py agent/tests/test_reliability_providers.py \
-       agent/tests/test_local_loader.py agent/tests/test_yahoo_loader.py -q
-....................................................                     [100%]
-52 passed in 1.79s
+agent/tests/pi_sidecar/test_gateway_bridge.py:6: in <module>
+    from src.pi_sidecar.gateway_bridge import GatewayBridge
+E   ModuleNotFoundError: No module named 'src.pi_sidecar.gateway_bridge'
+=========================== short test summary info ============================
+ERROR agent/tests/pi_sidecar/test_gateway_bridge.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
 ```
 
-All referenced loader test files exist. Full reliability suite + loaders: 183 passed, 0 failed.
+(Matches the brief's expected RED exactly.)
 
-## Verification of hard constraints
+**GREEN** (`pytest agent/tests/pi_sidecar -q`): `33 passed` (10 new + 23 existing). Scoped run: `10 passed in 0.48s`. Stability: 3 consecutive reruns all `10 passed`. Mutation check: removing the write lock flips the concurrency test to `assert 2 == 1` (fails); restored → green — the tests verify real serialization, not mocks.
 
-1. **Never cache side-effecting**: verified by `test_unsafe_error_result_not_cached`, `test_side_effecting_key_refused`, `test_bash_key_refused`. Three layers of defense (result status, error code, key pattern).
-2. **Ordering-independent keys**: verified by `test_normalized_keys_ignore_argument_ordering` and `test_deeply_nested_ordering_normalized`. Deep recursive sort via `json.dumps(sort_keys=True)`.
-3. **Off-path untouched**: the gateway constructor defaults `cache=None, health=None`. When None, zero cache/health code runs. Existing gateway tests (20 tests in `test_reliability_gateway.py`) all pass unchanged. Loader tests (`test_local_loader.py`, `test_yahoo_loader.py`) pass.
-4. **No raw prompt/credential values**: the cache module adds nothing to keys — it only re-normalizes caller-provided JSON. Documented in module docstring.
-5. **Monotonic expiry**: production path uses `time.monotonic()`. Test injection via `now` param uses wall-clock consistently.
-6. **No new dependency**: stdlib only (`json`, `time`, `collections`, `dataclasses`, `datetime`).
+**Lint**: `ruff check agent/src/pi_sidecar agent/tests/pi_sidecar` → `All checks passed!`. Full-tree `ruff check agent/src agent/tests` shows 297 pre-existing errors — identical count with my changes stashed (baseline), zero findings from my two files.
+
+**Safety narrow tests** (must stay green): `pytest agent/tests/test_sdk_order_gate.py agent/tests/test_mandate_enforcement.py -q` → `48 passed`. Order gate / mandate / kill switch untouched.
+
+## Files changed
+
+- `agent/src/pi_sidecar/gateway_bridge.py` (create)
+- `agent/tests/pi_sidecar/test_gateway_bridge.py` (create)
+
+Nothing else touched (pre-existing modified `task-1..6-report.md` files belong to other tasks; left alone).
+
+## Deviations from plan/brief (with reasons)
+
+1. **Unknown-tool pre-check guarded by `self._registry is not None`** (impl). The brief's draft code returned `unknown tool` whenever `registry.get()` → None — which fires for *every* call when the registry is None, and 9 of the 10 brief tests (plus the plan's own Task 15 integration tests at plan lines 6067/6087/6397, e.g. `GatewayBridge(None, gateway=CountingGateway())`) construct the bridge with `registry=None` and require gateway delegation. Verbatim code could pass at most 2/10 tests. Resolution: when the bridge has a registry it fast-fails unknown tools (test 8); when it has no registry it defers to the gateway — which is the mandated single choke point and itself rejects unregistered tools (`ToolGateway._lookup` → UNKNOWN StepResult). This satisfies the Global Constraint "所有工具调用必须穿过 ToolGateway.execute" and keeps the plan's downstream tests coherent.
+2. **`test_unknown_tool_is_error` fixture uses the plan's own unused `make_registry({})` helper** (test) instead of `registry=None`. The test's intent — unknown tool rejected with `"unknown tool"` in content, gateway never invoked (`NoopGateway` asserts not-called) — is preserved; with `registry=None` the bridge legitimately cannot know the tool is unknown, so the fixture now supplies an empty registry. This is the only way to keep the test meaningful alongside tests 1–7/9.
+3. **Concurrency test metric isolated per class** (test). The brief's `active["n"]` counter is shared by reads and writes, so `max_write_overlap` is polluted by the 3 concurrent reads (observed `4` = 3 reads + 1 write with a *correctly working* lock). The design explicitly allows reads to overlap a write (semaphore + independent write lock), so `max_write_overlap == 1` is only expressible with a dedicated write counter. Now `max_write_overlap` counts only write-write overlap (1 with lock, 2 without — mutation-verified).
+4. **Removed unused `import json` and `import pytest` from the test file** (F401) and **unused `started = self._now()` from the impl** (F841) — the brief's step 5 requires ruff-clean; these lines are dead in the draft.
+5. **Test count is 10, not 11** (brief step 4 says "11 passed"). The specified test file contains exactly 10 test methods (8 + 2). Plan miscount, recorded; all 10 pass.
+
+## Self-review findings
+
+- Safety re-checked: the only execution path is `gw.execute(...)`; idempotency replay returns a *recorded* gateway result (no re-execution); unknown-tool rejection happens before execution; `side_effecting` from params only selects scheduling/outcome semantics, never relaxes gateway classification (gateway's `_is_side_effecting` + `allow_side_effects` untouched).
+- `_tool_meta` defaults `side_effecting=True` for tools missing the attribute (conservative → serialized as write); production params always carry manifest values, so the fallback is a safety net.
+- No scope creep: `_pending`/`handle_cancel` kept verbatim as the cross-task interface (no-op today); no extra features added.
+- Test quality: collaborator fakes only — idempotency, concurrency, exception mapping, truncation, redaction, and unknown-tool rejection all exercise real bridge logic (mutation-verified for the lock). The bridge↔real-ToolGateway contract (policy/step_id/session_id passthrough) is covered by the plan's Task 15 integration test, out of scope here.
 
 ## Concerns
 
-None.
+- `asyncio.CancelledError` is converted to a result envelope rather than re-raised (brief verbatim; design §Idempotency: user-cancel → outcome_unknown for writes). Callers must not rely on cancellation propagation through `handle_invoke`.
+- `run_in_executor` work cannot be interrupted by `wait_for` timeout; a timed-out write may still complete in the background thread — inherent to the design, and the reason `outcome_unknown` requires state verification rather than fabricating a result.

@@ -1,64 +1,61 @@
-# Task 2 Report: Delete News page, feed hook, feed API client, add /news redirect
+# Task 2 Report — Python 协议帧编解码（与 TS 镜像）+ engine 开关
 
-**Status:** DONE
-**Commit:** `3360f18a` — `feat(frontend): remove news page and feed client, redirect /news to /watchlist` (DCO `Signed-off-by: NieAnSHOW`, no AI attribution)
-**Branch:** `feat/v0.1.17` (worked in place, no branch switch)
+**Status: DONE** · Branch `feat/pi-agent-sdk` · Commit `72156241`
 
 ## What was implemented
 
-Followed `.superpowers/sdd/task-2-brief.md` steps exactly:
+New package `agent/src/pi_sidecar/` (verbatim per brief):
 
-1. **Redirect test (new):** `frontend/src/__tests__/newsRedirect.test.tsx` — asserts `routes` export from router, `/news` child element is `<Navigate to="/watchlist" replace />` (checks `element.type === Navigate`, `props.to`, `props.replace`).
-2. **`frontend/src/router.tsx`:**
-   - Deleted `const News = lazy(() => import("@/pages/News"));`
-   - Replaced `{ path: "/news", element: wrap(News) }` with `{ path: "/news", element: <Navigate to="/watchlist" replace /> }` (comment: 旧版投资资讯路径：页面已移除（spec 2026-08-30 §2.3），重定向到自选股).
-   - Extracted route tree to `export const routes = [...]` (type-inferred `RouteObject[]`); `router = createBrowserRouter(routes)`. Route list otherwise verbatim.
-3. **Deletions:** `News.tsx`, `News.test.tsx`, `useWatchlistFeed.ts`, `useWatchlistFeed.test.tsx`, `e2e/news-responsive.spec.ts`, `playwright.config.ts`; `frontend/e2e/` dir removed (vanished with `git rm` of its sole file; explicit `rmdir` confirmed no-op).
-4. **`npm uninstall @playwright/test`:** `package.json` devDependency removed; `package-lock.json` entry (`node_modules/@playwright/test`) fully gone. The only remaining `playwright` strings in the lock are `@vitest/browser-playwright` — vitest 4.1.8's own bundled metadata (optional browser-mode integration), unrelated to the removed dep.
-5. **`frontend/src/lib/api.ts`:** deleted lines 68–243 (entire feed section: `Feed*` types, `WatchlistFeed`, `FeedRefreshAccepted`, `FEED_*` constants, `invalidFeedResponse`/`feedRecord`/`feedString`/`feedBoolean`/`feedArray`/`feedIsoDate`/`feedHttpUrl`, `parseFeedMatchedStock`/`parseFeedItem`/`parseWatchlistFeedResponse`/`parseFeedRefreshAccepted`) and lines 445–452 (`api.getWatchlistFeed`, `api.refreshWatchlistFeed`). `api` object now ends at `getDashboardIntradayBars`.
-6. **`frontend/src/lib/__tests__/api.test.ts`:** import reduced to `import { ApiError } from "../api";`; deleted lines 65–123 (`validFeed` fixture + whole `describe("parseWatchlistFeedResponse")` block, end of file).
+- `__init__.py` — `get_agent_engine()` (env `VIBE_AGENT_ENGINE` ∈ {"pi","legacy"}, default/invalid → "pi") + `LEGACY_ONLY_PROVIDERS = frozenset({"vip_server", "openai-codex"})`.
+- `protocol.py` — `PROTOCOL_VERSION = 1`, `MAX_FRAME_BYTES = 1_048_576`, `FrameError(code, message)`, `encode_frame` (LF-terminated, UTF-8 byte check, `frame_too_large` on over-limit), `decode_frame` (4 frame kinds: request/ok/err/event, `bad_json` / `bad_frame`), `LineSplitter` (incremental LF splitting, oversized-line guard).
 
-**Untouched as contracted (Task 3's):** `Layout.tsx` `/news` nav item + `layout.news` key in locale JSONs; `Layout.test.tsx` (mocks its own `/news` Route, passes). `Watchlist.tsx` uses lucide's `Newspaper` icon — unrelated, kept.
+Tests: `agent/tests/pi_sidecar/__init__.py` (empty) + `test_protocol.py` (verbatim from brief).
+
+Mirror check against `pi-sidecar/src/protocol.ts` (read during implementation): same constants, same error codes, same validation order (v → event/id → op → ok → error shape), same LF/byte semantics. `json.dumps(ensure_ascii=False)` ≡ TS `JSON.stringify` byte-for-byte for the frames in question; `LineSplitter` oversized check matches TS (`no \n in buffer && byteLen > MAX`).
 
 ## TDD evidence
 
-**RED** — `cd frontend && npx vitest run src/__tests__/newsRedirect.test.tsx` (before router change):
-```
-FAIL  src/__tests__/newsRedirect.test.tsx > legacy /news route > redirects to /watchlist with replace semantics
-TypeError: Cannot read properties of undefined (reading 'find')
- ❯ src/__tests__/newsRedirect.test.tsx:7:25
-Test Files  1 failed (1)   Tests  1 failed (1)
-```
-(`routes` not exported → undefined.)
+**RED** — `python -m pytest agent/tests/pi_sidecar/test_protocol.py --tb=short -q`:
 
-**GREEN** — same command after router change:
 ```
-Test Files  1 passed (1)   Tests  1 passed (1)
+E   ModuleNotFoundError: No module named 'src.pi_sidecar'
+=========================== short test summary info ============================
+ERROR agent/tests/pi_sidecar/test_protocol.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
 ```
 
-## Verification
+**GREEN** — same command after implementation:
 
-- `npm run build` → PASS (tsc strict + vite; pre-existing >500 kB chunk warning only).
-- `npx vitest run` (full suite) → **562 passed | 23 failed | 9 skipped**; 4/4 key files green: `newsRedirect.test.tsx`, `api.test.ts`, `Watchlist.test.tsx`, `Layout.test.tsx` (35/35 combined run).
-- **Baseline check (`git stash -u` → rerun → pop):** identical 23 failures, same 14 files (RequireAuth, SetPasswordModal, MetricsCard ×2, SwarmStatusCard, ThinkingTimeline ×4, ErrorBoundary, ConnectionBanner ×2, UserMenu, apiUser, formatters ×2, Agent.attempt-completion ×4, Usage ×7, Profile, auth). Baseline totals 613 tests vs 594 after my change — delta of 19 is exactly the deleted feed tests (all had been passing). **My change introduces zero new failures and fixes none of the pre-existing ones.** Stash popped cleanly.
-- **Dangling-reference sweep** (`grep` over frontend/src for `pages/News|useWatchlistFeed|WatchlistFeed|parseWatchlistFeed|FeedItem|FeedSource|FeedMatch|FeedRefresh|FEED_|@playwright/test`): zero matches.
-- Commit scope: `git add -A frontend` only — the unrelated working-tree modification to `.superpowers/sdd/task-1-report.md` (not mine) was deliberately left unstaged/out of the commit; historical `.superpowers/**` untouched.
+```
+17 passed in 0.03s
+```
 
-## Files changed (12, +22/−1154)
+**Lint** — `ruff check agent/src/pi_sidecar agent/tests/pi_sidecar` → `All checks passed!`
 
-- Deleted: `frontend/src/pages/News.tsx`, `frontend/src/pages/__tests__/News.test.tsx`, `frontend/src/hooks/useWatchlistFeed.ts`, `frontend/src/hooks/__tests__/useWatchlistFeed.test.tsx`, `frontend/e2e/news-responsive.spec.ts` (+ empty `e2e/` dir), `frontend/playwright.config.ts`
-- Modified: `frontend/src/router.tsx`, `frontend/src/lib/api.ts`, `frontend/src/lib/__tests__/api.test.ts`, `frontend/package.json`, `frontend/package-lock.json`
-- Added: `frontend/src/__tests__/newsRedirect.test.tsx`
+Focused dir run `pytest agent/tests/pi_sidecar -q` → `17 passed`.
 
-## Self-review findings
+## Files changed (all per brief's Files list)
 
-- Brief line numbers matched on-disk reality exactly (api.ts 68–243 & 445–452; api.test.ts line 2 & 65–123) — verified by content before cutting.
-- `export const routes` has inferred type; redirect test type-checks (`element.type`/`props.to`/`props.replace`) under tsc strict.
-- No suppressions, no leftover aliases/shims; clean cutover.
-- One tooling hiccup during editing (a multi-section edit momentarily injected a literal `PUT` line into router.tsx) was caught by the editor's parse warning and repaired immediately; final file verified clean by full re-read + successful build/tests.
+- `agent/src/pi_sidecar/__init__.py` (new)
+- `agent/src/pi_sidecar/protocol.py` (new)
+- `agent/tests/pi_sidecar/__init__.py` (new, empty)
+- `agent/tests/pi_sidecar/test_protocol.py` (new)
+
+Commit `72156241` — `feat(pi-sidecar): python protocol codec mirroring TS framing + engine flag` (DCO Signed-off-by present, no AI trailers).
+
+## Deviations from plan
+
+1. **Brief's step 5 expects `20 passed`; actual is `17 passed`.** The brief's own verbatim test file contains 17 tests (2 encode + 2+5+1 decode + 3 splitter + 4 engine = 17). No code deviation — the "20" is a miscount in the brief's expected-output note. All 17 pass.
+
+## Self-review
+
+- Completeness vs brief: all 4 files created exactly as specified; all interfaces in the Produces block present with correct signatures and semantics.
+- YAGNI: nothing extra added — no client/session modules (those are Tasks 3/9).
+- Tests verify real behavior: they exercise `encode_frame`/`decode_frame`/`LineSplitter`/engine switch directly (round-trip, byte-limit, error codes, incremental chunking, env fallback); no mocks. The oversized-line test depends on `MAX_FRAME_BYTES` (~1 MiB of "x") — fine.
+- Edge cases exercised: empty/whitespace line, non-object, wrong v, non-string id/op/event, non-dict params, ok non-boolean, malformed error frame, non-ASCII passthrough (`ensure_ascii=False` mirrors TS).
+- No scope creep; `agent/src/live/` untouched.
 
 ## Concerns
 
-None blocking. Two observations for the record:
-1. Pre-existing failures (23) are stable and unrelated (baseline-proven); the brief's "known pre-existing failures" note covers them. Note the count has grown vs. the 13 previously recorded in project memory — growth happened before this task (present in stash baseline too).
-2. `@vitest/browser-playwright` strings remain in `package-lock.json` via vitest's own metadata — not the removed dependency; nothing actionable.
+- None blocking. The 17-vs-20 count noted above (cosmetic, brief-internal).
+- `agent/tests/pi_sidecar` was created with `__init__.py` — required because sibling test packages (`agent/tests/`) use the same layout, and pytest's rootdir/import mode resolves `src.*` cleanly with it.

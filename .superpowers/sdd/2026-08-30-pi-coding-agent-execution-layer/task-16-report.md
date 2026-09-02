@@ -183,3 +183,43 @@ Combo C landed. Runtime probe of the landed code: `getToolByName("read"/"write"/
 ### Validation
 - `cd pi-sidecar && bun test` → 66 pass / 0 fail
 - `pytest agent/tests/pi_sidecar -q` → 82 passed
+
+## Final-review fix wave
+
+Whole-branch final review (0 Critical, 6 Important) findings fixed in this wave; per-fix notes appended here (cross-cutting — spans migration/tool-bridge/session-service/main.ts, see commits below).
+
+### Fix 1 — migration single-frame overflow → silent history loss (migration.py, service.py)
+What changed: `migrate_session_if_needed` chunk-imports old messages at ≤900KB/frame (append-additive, `_MAX_IMPORT_FRAME_BYTES`, serialized UTF-8 budget). It is now open-first: `open_session`, and only on `not_found` does `new_session`; when the Pi session already exists but is unmarked with old messages present (half-created by a prior failed import) it resumes from the existing Pi message count (`_count_pi_session_messages`) instead of duplicating. `FrameError` no longer escapes the handler (chunked + caught together with `SidecarError`). service.py `_run_with_pi` open flow treats "session exists + no marker + old messages" as a retryable migration state and completes it — pre-cutover context is never silently dropped.
+Tests: `test_migrate_chunks_over_1MiB_session_into_small_frames` (400×~12.6KB messages migrate in ≥2 frames, each real wire frame ≤900KB, 400/400 no loss/dup) and `test_migrate_resumes_half_created_pi_session_without_duplicating` (existing Pi session with 2 of 3 msgs → only the remaining 1 imported, marker written, no `new_session`).
+Result: `pytest agent/tests/pi_sidecar/test_migration.py -q` → 8 passed (was 6).
+
+### Fix 2 — cancelled / provider-error marked completed with empty content (service.py)
+What changed: `_run_with_pi` now inspects the `agent_end` payload `messages` at the isTerminal branch via `_agent_end_failure_reason` (final assistant `stopReason` ∈ {aborted,error,user_interrupt} or a truthy `errorMessage`). An abnormal terminal records a reason and the attempt is returned as `status="failed"` (partial text preserved) instead of `success` with an empty summary.
+Tests: `AbortClient` + `test_cancel_mid_turn_marks_attempt_failed_not_success` — an aborted terminal (empty content, stopReason "aborted") yields `attempt.status == FAILED` (not COMPLETED) with error containing "aborted", both via direct `_run_attempt_pi` and the interactive `send_message` path.
+Result: `pytest agent/tests/pi_sidecar/test_service_cutover.py -q` → 12 passed.
+
+### Fix 3 — ToolBridge session context process-global → idempotency misattribution (tool-bridge.ts, session-driver.ts, main.ts)
+What changed: ToolBridge keeps a per-session `SessionScope` keyed by vibeId. `customTools(vibeId)` closures and `onSessionEvent(e, vibeId)` route to that session's own scope; `SessionDriver.buildSession` binds tools per session and `main.wireSession` feeds events by vibeId. Interleaved concurrent attempts can no longer cross-contaminate idempotency-key prefixes (session A's tool invoke carrying session B's prefix previously misrouted Python `_handle_tool_invoke_host`). ToolBridgeLike seam kept compatible (customTools gains an optional sessionId).
+Test: `finding 3: interleaved sessions' tool invokes carry their own idempotency prefix` — events interleaved across two sessions, each invoke carries its own `sess-*:entryId:callId` prefix.
+Result: `bun test` → 68 pass.
+
+### Fix 6 — async extension import races first new_session (main.ts)
+What changed: production sidecar now awaits vibe-providers/vibe-memory dynamic imports before emitting the ready frame (`gateReady`, `defaultLoadExtensions`). Test harness keeps synchronous ready emission when deps are injected. Removes the first-new_session "no model" (self-healing) race.
+Test: `ready is emitted only after extension-load resolves (finding 6 gate)` — injected deferred loader: zero output before resolve, ready is frame[0] after.
+Result: `bun test` → 68 pass.
+
+### Fix 4 — include_shell_tools silently dropped under pi (service.py)
+What changed: pi engine keeps the registry shell-excluded (security posture: shell tools are legacy-reviewed, not gateway-exempted). A shell-enabled pi request now emits a `pi.notice` diagnostic (`kind: shell_tools_unavailable_pi`) instead of silently losing bash.
+Result: covered by suite run; notice path exercised in service `_run_with_pi` gated on `include_shell_tools`.
+
+### Fix 5 — provider/model settings frozen at sidecar spawn (client.py, service.py)
+What changed: `PiSidecarClient.respawn()` (intentional restart — no crash budget consumed, env re-read from current `os.environ`, active-session set cleared for lazy re-open) plus a `spawn_env` snapshot property. `_run_with_pi` lazily restarts the client at the next idle attempt start when the model/provider env fingerprint (`_PI_MODEL_ENV_KEYS` subset) changed; restart is deferred while any other attempt is active (never kills in-flight turns) and resets `_manifest_sent` so the new sidecar receives the tool manifest before its first session.
+Tests: `test_respawn_on_provider_env_change_when_idle` (env change → respawn called + manifest reset), `test_no_respawn_when_env_unchanged`, `test_respawn_deferred_while_attempt_active`.
+Result: `pytest agent/tests/pi_sidecar/test_service_cutover.py -q` → 12 passed.
+
+### Validation (exactly, after the wave)
+- `cd pi-sidecar && bun test` → 68 pass / 0 fail
+- `pytest agent/tests/pi_sidecar -q` → 94 passed
+- `pytest agent/tests/test_sdk_order_gate.py agent/tests/test_mandate_enforcement.py -q` → 48 passed (safety narrow)
+- `ruff check` on all touched files (`migration.py`, `client.py`, `service.py`, `test_migration.py`, `test_service_cutover.py`) → All checks passed; whole-tree `ruff check agent/src agent/tests` → 291 errors = pre-existing baseline (all in untouched legacy files; 0 new)
+- Commits: `28838f1b` (TS findings 3+6), `68d22941` (Python findings 1/2/4/5)

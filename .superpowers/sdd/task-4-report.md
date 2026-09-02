@@ -1,65 +1,69 @@
-# Task 4 Report: Remove the backend news pipeline and its wiring
+# Task 4 Report: 命令循环 + 17 个 op 处理器（依赖注入）
 
-**Status:** DONE
-**Commit:** `dc1ddf6e` — `feat(backend): remove investment news pipeline and /news-api wiring` (amended once to strip unintended reformat noise; DCO `Signed-off-by` present, no AI attribution)
-**Branch:** feat/v0.1.17 (worked in place)
+- **Status:** DONE_WITH_CONCERNS（2 处计划缺陷已按契约意图最小修复，见 Deviations）
+- **Commit:** `8cbfb3b1` feat(pi-sidecar): RPC command routing with injectable session driver
+- **Files changed:** `pi-sidecar/src/commands.ts`（Create, 213 行）、`pi-sidecar/src/commands.test.ts`（Create, 164 行）
 
-## What was implemented
+## What I implemented
 
-Followed the brief's steps 1-11 in order (TDD: RED → delete/unwire → GREEN).
+按 brief 逐字实现 `createCommandHandler`：
 
-1. **Step 1-2 (RED):** Created `agent/tests/test_news_api_removed.py` (route-table assertion + 8-singleton absence assertion). Ran it pre-removal: `2 failed` — offenders were exactly `/news-api/watchlist-feed`, `/news-api/watchlist-feed/refresh`, and `_feed_store` (first singleton hit). Matches the brief's expected failure.
-2. **Step 3:** `git rm` of `agent/src/api/watchlist_feed_routes.py`, `agent/tests/test_watchlist_feed_routes.py`, `agent/tests/test_spa_fallback.py`, recursive `git rm -r agent/src/news agent/tests/news`; removed stale `__pycache__` dirs.
-3. **Step 4:** `agent/api_server.py` — SPA 404 branch (old lines 176-178) reduced to the generic `if "text/html" not in _accept_header(scope): return JSONResponse(... 404 ...)`; deleted the entire feed wiring block (old lines 402-437): banner comment, `register_watchlist_feed_routes` import, eight `from src.news...` imports, all eight `_feed_*`/`_flash_aggregator`/`_announcement_collector` singletons, the `register_watchlist_feed_routes(app, ...)` call, `_feed_stop = asyncio.Event()`, and both `@app.on_event("startup")`/`("shutdown")` handlers. File now goes `register_dashboard_routes(app, require_auth=require_auth)` → `# Scheduled Research Routes` banner.
-4. **Step 5:** `agent/src/api/security.py` — `_redact_access_log_query` is now the single `return _QUERY_SECRET_RE.sub(r"\1[redacted]", value)` with the "Redact known credential query values" docstring; no `/news-api` path special-case.
-5. **Step 6 (GREEN):** `python -m pytest agent/tests/test_news_api_removed.py -q` → `2 passed`.
-6. **Step 7:** `agent/tests/test_security_auth_api.py` — removed `from src.news.refresh import RefreshDecision` import (line 14); `from src.api import security` kept. Deleted the nine feed-only tests/helpers: `test_remote_news_api_requires_existing_auth_dependency`, `test_cross_site_news_refresh_is_rejected_before_coordinator_work`, `_accepted_refresh_decision`, `test_vite_origin_can_refresh_across_ports`, `test_unconfigured_loopback_origin_cannot_start_news_refresh`, old news-based `test_custom_cors_origins_do_not_merge_loopback_defaults`, `test_same_origin_request_can_start_news_refresh`, `test_non_browser_request_without_origin_can_start_news_refresh`, `test_remote_trusted_origin_still_requires_api_key`. Kept `test_unconfigured_loopback_origin_cannot_write_watchlist_before_persistence` and `test_watchlist_write_allows_trusted_or_absent_origin`. Added the CORS-merge replacement test on the live `/watchlist/stocks` route verbatim from the brief (`monkeypatch security._CORS_ORIGINS=["http://localhost:5899"]` + `watchlist_routes._get_connection` spy → untrusted Vite loopback origin gets 403 and zero writes).
-7. **Step 8:** `agent/tests/test_sse_ticket_and_headers.py` — deleted `test_uvicorn_filter_removes_all_query_values_from_news_api_subroute_access_logs` (old lines 124-139); generic redaction test retained.
-8. **Step 9-10:** see verification below.
-9. **Step 11:** committed with `git add -A agent && git commit -s`.
+- **接口**：`SessionLike`（AgentSession 子集，Task 5 的 PiSessionDriver 实现目标）、`SessionDriver`、`FrameSink`、`MsgOut` 全部按 brief 定义导出。
+- **命令循环**：输入一行 → trim → 空行忽略 → `JSON.parse` 失败发 `bad_json` 错误帧 → 非 `{v:1,id,op}` 结构发 `bad_frame` → 分发 `handleRequest` → 结果帧经 `sink` 输出；外层 try/catch 兜底，**绝不 throw**（错误帧兜底，未知错误 code 落 `internal`）。
+- **17 个 op**：`ping`（`{pong:true,protocol:1}`）、`new_session`/`open_session`（返回 `{session_file}`，成功后 `wireEvents` 接线订阅）、`prompt`（busy → `session_busy`，否则立即 ack `{accepted:true}`，`void s.prompt().catch()` 失败不 ack 失败）、`steer`/`follow_up`（`{queued:true}`）、`abort`（`{aborted:true}`）、`get_state`（busy/model/thinking_level/session_file/session_id；model/thinking_level 走可选 `currentModel?()/currentThinkingLevel?()` 探测）、`get_messages`（M1：limit 可选默认 100；非正整数 → `bad_request`；busy → `session_busy`；`before_cursor` 缺省 null；`nextCursor`→`next_cursor`）、`set_model`/`set_thinking_level`、`compact`（立即 ack `{started:true}`，fire-and-forget）、`navigate_tree`（`{leaf_id}`）、`export_session`（`{path}`）、`set_tool_manifest`（`{count}`）、`import_messages`（`{imported}`，会话内操作）、`tool_cancel`（`{cancelled}`）。
+- **错误映射**：`unknown_op`、`no_session`、`session_busy`、`bad_request`、`bad_json`、`bad_frame`、`not_found`（driver.open 抛的 `code:"not_found"` 透传）、兜底 `internal`。
+- **事件转发**：每会话 `wireEvents`（`Set<string>` 去重），driver 订阅回调 → `session_event` 帧 `{"event":"session_event","session_id":...,"data":{"type":...,"payload":...}}` 经 sink 发出；sink 写失败吞掉不 throw。`agent_end(isTerminal!==false)` 由 Task 5 的 driver 实现转成该帧（本层只透传）。
+- `hostCall` 留在 deps 签名并解构（本任务未使用，Task 5/main 消费），按 brief 原样。
 
-## Verification
+## TDD Evidence
 
-- **py_compile:** `python -m py_compile agent/api_server.py agent/src/api/security.py` → OK.
-- **Focused suite (Step 9 set; watchlist file substituted, see Deviations):** `python -m pytest agent/tests/test_news_api_removed.py agent/tests/test_security_auth_api.py agent/tests/test_sse_ticket_and_headers.py agent/tests/test_spa_static_files_fallback.py agent/tests/test_watchlist_crud.py agent/tests/test_watchlist_routes_skeleton.py -q` → **82 passed, 5 failed**.
-  - All 5 failures baseline-verified pre-existing via `git stash push -u` → same tests fail identically on the unmodified tree → `git stash pop`: 2× llm-settings `assert 422 == 200` + 3× `TestClient.__init__() got an unexpected keyword argument 'client'` (the known env drift).
-- **Step 10 import sanity:** `python -c "...import api_server; print('app ok, routes:', len(api_server.app.routes))"` → `app ok, routes: 85` (no `ModuleNotFoundError`).
-- **Safety tests:** `agent/tests/test_sdk_order_gate.py` + `agent/tests/test_mandate_enforcement.py` → **48 passed**.
-- **TDD evidence:** RED `2 failed` (stale routes + `_feed_store`) before removal; GREEN `2 passed` after; full run before commit.
+**RED** — Step 2（写测试后、实现前）：
+```
+$ bun test src/commands.test.ts
+error: Cannot find module './commands' from '.../pi-sidecar/src/commands.test.ts'
+ 0 pass / 1 fail / 1 error
+```
 
-## Files changed (full list, commit dc1ddf6e — 26 files, +46/−3670)
+**GREEN** — Step 4（实现后）：
+```
+$ bun test src/commands.test.ts
+ 10 pass
+ 0 fail
+ 24 expect() calls
+Ran 10 tests across 1 file.
+```
 
-Deleted:
-- `agent/src/api/watchlist_feed_routes.py`
-- `agent/src/news/__init__.py`, `calendar.py`, `health.py`, `matcher.py`, `refresh.py`, `store.py`, `transport.py`
-- `agent/src/news/announcements/__init__.py`, `collector.py`
-- `agent/src/news/flash/__init__.py`, `service.py`
-- `agent/tests/news/test_announcements.py`, `test_calendar.py`, `test_flash_service.py`, `test_health.py`, `test_matcher.py`, `test_store.py`, `test_transport.py`
-- `agent/tests/test_watchlist_feed_routes.py`
-- `agent/tests/test_spa_fallback.py` (news-only SPA branch test; `agent/tests/test_spa_static_files_fallback.py` untouched and still passing)
+**全量回归**（不越界，仅 pi-sidecar 子套件）：
+```
+$ bun test   # pi-sidecar 目录
+ 31 pass
+ 0 fail
+ 73 expect() calls
+Ran 31 tests across 4 files.
+```
+（pi-sidecar 无 tsc 依赖；全局约束指定的验证门是 `cd pi-sidecar && bun test`，已全绿。未跑仓库全量套件，符合非协商规则。）
 
-Modified:
-- `agent/api_server.py` (SPA branch + feed wiring unwired)
-- `agent/src/api/security.py` (single-hunk redaction simplification)
-- `agent/tests/test_security_auth_api.py` (9 removals + 1 replacement test)
-- `agent/tests/test_sse_ticket_and_headers.py` (news redaction test deleted)
+## Deviations from plan（均记录在测试文件内注释）
 
-Added:
-- `agent/tests/test_news_api_removed.py` (removal contract, 2 tests)
+1. **brief 实现代码末尾多一个 `}`（第 428 行）** — 按 brief 原样会语法错误（`createCommandHandler` 已在第 427 行 `}` 闭合，428 是游离括号）。已省略该多余 `}`；文件 213 行、括号平衡、bun 编译通过。这是计划文件未编译过的机械笔误，非契约变更。
+2. **bad json 测试无法触发 `bad_json`** — harness 的 `send` 是 `handler(JSON.stringify(obj))`，`h.send("{nope")` 会把字符串再序列化成合法 JSON 字符串 `"\"{nope\""`，handler 解析成功（值是 string）→ 走 `bad_frame` 分支，测试收到 `bad_frame` 而非 `bad_json`。修复：`send` 对 string 类型直接透传原始行（`typeof obj === "string" ? obj : JSON.stringify(obj)`），对象仍走 JSON.stringify。断言文本未动。
+3. **import_messages 测试缺会话创建** — 该 harness 从未 new_session/open_session，`needSession` 正确返回 `no_session`，与 `{imported:2}` 断言冲突（实现无错：import_messages 是会话内操作，brief 实现同样用 `needSession`）。修复：r-22 前插入 `new_session`（r-22-prep），后续帧下标 +1。其余断言未动。
 
-Explicitly preserved (verified untouched via `git status`/`git diff`): `agent/src/tools/stock_news_tool.py`, `agent/tests/test_stock_news_tool.py`, `agent/tests/test_spa_static_files_fallback.py`. `~/.vibe-trading/news.db` was never referenced or deleted — the file simply loses its reader.
+以上两处修复都以 brief 自身契约（Step 4 "全部 pass（10 用例）" + result 形状表）为准，最小化改动测试设施，未改任何实现行为。
 
 ## Self-review findings
 
-- **Grep sweep** of `agent/` (excluding `__pycache__`): zero remaining hits for `src.news`, `_feed_`, `watchlist_feed_routes`, `news-api` outside the new contract test's own assertion strings. Remaining "feed" matches are unrelated subsystems (backtest `_event_feed_specs`, rsshub provider, Alpaca `feed` config). No `from src import news` / `import news` alternates. `asyncio` import in api_server still used (line 252 watchlist backfill).
-- **Contract met:** zero `/news-api` routes and zero `_feed_*` attributes on `api_server.app` (pinned by the new test); SPA fallback 404s non-HTML purely on Accept; `_redact_access_log_query` has no path special-case; security test file keeps generic Origin guarantees on live routes plus the new CORS-merge test.
-
-## Incidents & deviations
-
-1. **Unintended reformat noise, found and removed (important):** The first commit (`d5647a28`) accidentally included ~5 reformat-only hunks in `agent/src/api/security.py` (expanded `frozenset(...)`, joined log strings, collapsed comprehensions — ruff-format style) that I did not author. Root cause observed: the edit-tool path on this file reapplies a formatter — after I restored the file byte-identical to the parent via `cp` and re-applied only my hunk with the edit tool, the reformat reappeared on disk (verified by grep), though my post-restore read had shown parent formatting. Fix: rebuilt the file from `git show a4340f85:agent/src/api/security.py` + the redaction hunk via a bash/python patch (bypassing the edit path), verified `git diff a4340f85 -- agent/src/api/security.py` shows exactly one hunk, then `git commit --amend -s --no-edit` → final commit `dc1ddf6e` (+46/−3670 vs the noisy +59/−3688). Post-amend checks: committed blob retains parent compact formatting, py_compile OK, focused tests unchanged. **Note for main agent:** any future `edit`-tool hunk on `agent/src/api/security.py` may silently drag in whole-file reformatting; verify `git diff` immediately after editing that file.
-2. **Brief's Step 9 filename:** `agent/tests/test_watchlist_routes.py` does not exist in the repo. Substituted the actual watchlist route tests `agent/tests/test_watchlist_crud.py` + `agent/tests/test_watchlist_routes_skeleton.py` (same intent: prove watchlist CRUD untouched — both pass).
-3. **First edit hunk numbering:** after the SPA-branch edit shifted lines, the feed-wiring block was re-read and cut at its fresh positions (401-437); likewise the three later news tests in `test_security_auth_api.py` (original 366-416) needed a second cut after the earlier hunks shifted them — LSP flagged the dangling `RefreshDecision` references, which is how they were caught.
+- **完整性**：17/17 op 逐字对齐 brief；result 形状与「跨任务接口契约」表一致；`prompt`/`compact` 立即 ack、错误经 session_event 流出；`get_messages` 的 M1 语义（limit 缺省 100、仅非正整数报 bad_request）与计划修复一致。
+- **质量**：`needSession`/`requireParams`/`errCode` 单一职责助手；错误帧兜底保证 handler 永不 throw；事件接线幂等（`wired` Set）。
+- **YAGNI**：未加任何计划外特性；`hostCall` 保持解构未用（Task 5 契约的一部分）。
+- **测试真实性**：fake SessionLike 模拟 Task 5 SessionDriver 必须满足的契约面（prompt/steer/abort/getMessages/subscribe/importMessages…），断言的是协议帧行为而非实现内部——正是 brief 的 DI 设计意图。event 转发测试用真实 subscribe 回调注入验证。
 
 ## Concerns
 
-- None blocking. The 5 focused-suite failures are pre-existing (stash-baseline proven). The formatter-reapplies-on-edit behavior of `agent/src/api/security.py` is a harness quirk worth remembering, not a repo defect.
+- 两个测试缺陷意味着计划文件未经编译验证（Task 4 的测试与实现互斥）。Task 5 起若计划含可执行代码，建议先跑 RED 再实现，避免同类互斥。
+- `encodeFrame` 对 >1MiB 帧抛 `FrameError`：外层 catch 会尝试再发一条错误帧（小帧，不会超限）——理论上若错误帧本身超限会二次抛，实际不可达，按 brief 原样保留。
+- 未触碰 `agent/src/live/` 行为；未推送。
+
+## Report file
+
+本文件：`.superpowers/sdd/task-4-report.md`
