@@ -12,6 +12,17 @@ const TOOL = {
   timeout_seconds: 1800,
 };
 
+const WRITE_TOOL = {
+  name: "edit_file",
+  label: "Edit File",
+  description: "Write a file",
+  parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+  is_readonly: false,
+  side_effecting: true,
+  repeatable: false,
+  timeout_seconds: 1800,
+};
+
 function deferred<T>() {
   let resolve!: (v: T) => void;
   const promise = new Promise<T>((r) => (resolve = r));
@@ -97,5 +108,66 @@ describe("ToolBridge", () => {
   test("cancel unknown call id returns false", async () => {
     const bridge = new ToolBridge(async () => ({}));
     expect(bridge.cancel("nope")).toBe(false);
+  });
+
+  test("M8: write-class transport timeout resolves outcome_unknown", async () => {
+    const bridge = new ToolBridge(async () => {
+      throw Object.assign(new Error("host call tool_invoke timed out"), { code: "timeout" });
+    });
+    await bridge.setManifest([WRITE_TOOL]);
+    const tools = bridge.customTools() as Array<{
+      execute: (id: string, params: Record<string, unknown>, signal: AbortSignal | null, onUpdate: unknown, ctx: unknown) => Promise<{ content: Array<{ type: string; text: string }> }>;
+    }>;
+    const r = await tools[0].execute("call-w1", { path: "a.txt" }, null, null, {});
+    const parsed = JSON.parse(r.content[0].text);
+    expect(parsed.outcome).toBe("outcome_unknown"); // 写类传输失败绝不伪造结果
+    expect(parsed.status).toBe("error");
+  });
+
+  test("M8: read-class transport timeout resolves error", async () => {
+    const bridge = new ToolBridge(async () => {
+      throw Object.assign(new Error("host call tool_invoke timed out"), { code: "timeout" });
+    });
+    await bridge.setManifest([TOOL]); // 只读
+    const tools = bridge.customTools() as Array<{
+      execute: (id: string, params: Record<string, unknown>, signal: AbortSignal | null, onUpdate: unknown, ctx: unknown) => Promise<{ content: Array<{ type: string; text: string }> }>;
+    }>;
+    const r = await tools[0].execute("call-r1", { query: "aapl" }, null, null, {});
+    const parsed = JSON.parse(r.content[0].text);
+    expect(parsed.outcome).toBe("error"); // 只读 → isError/error，非 outcome_unknown
+    expect(parsed.status).toBe("error");
+  });
+
+  test("cancel() interrupts in-flight execute and aborts the injected signal", async () => {
+    let seenSignal: AbortSignal | null = null;
+    let seenTimeoutMs: number | undefined;
+    const bridge = new ToolBridge(async (_op, _params, timeoutMs, signal) => {
+      seenTimeoutMs = timeoutMs;
+      seenSignal = signal ?? null;
+      await new Promise<never>((_resolve, reject) => {
+        // 注入的 fake hostCall 遵守 signal：中止立即 reject（code:"aborted"），与 HostRpc 一致
+        signal?.addEventListener(
+          "abort",
+          () => reject(Object.assign(new Error("host call aborted"), { code: "aborted" })),
+          { once: true },
+        );
+      });
+    });
+    await bridge.setManifest([WRITE_TOOL]);
+    const tools = bridge.customTools() as Array<{
+      execute: (id: string, params: Record<string, unknown>, signal: AbortSignal | null, onUpdate: unknown, ctx: unknown) => Promise<{ content: Array<{ type: string; text: string }> }>;
+    }>;
+    const p = tools[0].execute("call-w2", { path: "b.txt" }, null, null, {});
+    // 信号 + 显式 timeoutMs(≥ 兜底预算) 已透传给传输层
+    expect(seenSignal).toBeInstanceOf(AbortSignal);
+    expect(seenTimeoutMs).toBeGreaterThanOrEqual(3_600_000);
+    expect(seenSignal!.aborted).toBe(false);
+    expect(bridge.cancel("call-w2")).toBe(true);
+    // 注入的 signal 确实被 abort —— 传输层据此中断 in-flight execute
+    expect(seenSignal!.aborted).toBe(true);
+    const r = await p; // 不挂死：cancel 中断后立即返回
+    const parsed = JSON.parse(r.content[0].text);
+    expect(parsed.error).toBe("tool_cancelled"); // 映射 commands.ts 的 cancelled/tool_cancelled 语义
+    expect(parsed.outcome).toBe("outcome_unknown");
   });
 });
