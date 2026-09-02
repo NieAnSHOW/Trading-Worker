@@ -125,8 +125,37 @@ class TestBasicFlow:
                 names = [d.get("type") for ev, sid, d in events if ev == "session_event"]
                 assert "tool_execution_start" in names
                 assert "tool_execution_end" in names
-                # provider 收到第二轮请求（带 tool result）
+                # Python 返回成功信封（isError=False），结果含实际计算值 42
+                ends = [
+                    d.get("payload", {})
+                    for ev, sid, d in events
+                    if ev == "session_event" and d.get("type") == "tool_execution_end"
+                ]
+                assert ends and all(e.get("isError") is False for e in ends)
+
+                # 结果文本（gateway StepResult 信封 JSON，data 是内层 JSON 字符串）里实际计算值
+                def _gateway_result(text: str):
+                    try:
+                        envelope = _json.loads(text)
+                        return _json.loads(envelope["data"]).get("result")
+                    except Exception:  # noqa: BLE001 — 形状漂移时断言失败而非崩溃
+                        return None
+
+                end_texts = []
+                for e in ends:
+                    content = (e.get("result") or {}).get("content") if isinstance(e.get("result"), dict) else None
+                    if isinstance(content, list) and content:
+                        end_texts.append(str(content[0].get("text", "")) if isinstance(content[0], dict) else "")
+                assert any(_gateway_result(t) == 42 for t in end_texts)
+
+                # provider 第二轮请求携带 tool role 消息（gateway 结果回灌模型）
                 assert len(provider.requests) >= 2
+                tool_msgs = [
+                    m.get("content", "")
+                    for m in provider.requests[1].get("messages", [])
+                    if isinstance(m, dict) and m.get("role") == "tool"
+                ]
+                assert tool_msgs and _gateway_result(tool_msgs[0]) == 42
 
             try:
                 await main()
