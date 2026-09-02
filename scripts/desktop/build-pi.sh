@@ -18,6 +18,13 @@ esac
 
 cd "$PI_DIR"
 bun install --frozen-lockfile   # 精确锁定（design §Packaging：lockfile 提交）
+
+# 发布闸门：内建工具封锁（write/edit/bash 不绕过 Python ToolGateway）是行为性
+# 保证 —— toolNames:[] + plan.enabled:false 依赖 SDK 内部 ensureWriteRegistered 等
+# 注册行为，非 API 级白名单（restrictToolNames:true 会断掉 extension 加载，见
+# task-16 报告）。编译前跑完整 sidecar 测试套件（含 session-driver.test.ts 的
+# 内建工具不在场断言）：SDK 行为漂移在此失败并中止构建，而不是静默进入发布包。
+bun test
 # omp-legacy-pi-modules: SDK 私有编译期虚拟模块（npm 包不含），仅在编译态 legacy
 # 扩展加载路径用到；sidecar 只用 createAgentSession + 现代扩展，标记 external 保持
 # 未解析即可（与 SDK 自身 bundle-dist.ts 的 ALWAYS_EXTERNAL 一致；ping 冒烟见步骤 10）。
