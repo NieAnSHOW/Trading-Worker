@@ -4,13 +4,22 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 class FakeOpenAIProvider:
-    def __init__(self, responses: list[dict], model: str = "fake-model"):
-        self.responses = responses
+    def __init__(
+        self,
+        responses: list[dict] | None = None,
+        model: str = "fake-model",
+        resolver: "Callable[[dict], dict] | None" = None,
+    ):
+        # resolver: Callable[[request_body], dict] — 按请求内容脚本化响应（perf A/B 用）；
+        # 缺省 None 时保持原行为：按 assistant 消息计数在 responses 里线性取。
+        self.responses = responses or []
         self.model = model
+        self.resolver = resolver
         self.requests: list[dict] = []
         # brief 原文传 self._handler（方法对象）→ 服务器按 (request, client_address, server) 调用
         # 报 "takes 1 positional argument but 4 were given"；须调用 _handler() 取回内部 handler 类。
@@ -44,8 +53,13 @@ class FakeOpenAIProvider:
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 outer.requests.append(body)
-                idx = min(outer._assistant_count(body.get("messages", [])), len(outer.responses) - 1)
-                script = outer.responses[idx]
+                script = (
+                    outer.resolver(body)
+                    if outer.resolver is not None
+                    else outer.responses[
+                        min(outer._assistant_count(body.get("messages", [])), len(outer.responses) - 1)
+                    ]
+                )
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.end_headers()
