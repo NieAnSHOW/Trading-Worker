@@ -7,14 +7,16 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import logging
+import os
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 
-# Dedicated thread pool limited to four concurrent agents to avoid exhausting the default executor.
-_AGENT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="agent")
-
+from src.pi_sidecar import LEGACY_ONLY_PROVIDERS, get_agent_engine
+from src.pi_sidecar.client import SidecarError
 from src.session.events import EventBus
 from src.session.models import (
     Attempt,
@@ -24,6 +26,81 @@ from src.session.models import (
 )
 from src.session.search import get_shared_index
 from src.session.store import SessionStore
+
+if TYPE_CHECKING:
+    from src.agent.loop import AgentLoop
+    from src.pi_sidecar.client import PiSidecarClient
+    from src.pi_sidecar.gateway_bridge import GatewayBridge
+
+# Dedicated thread pool limited to four concurrent agents to avoid exhausting the default executor.
+_AGENT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="agent")
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Pi sidecar 专用事件循环（B4）：client 生命周期绑定到模块级守护线程 loop，
+# 所有 service<->client 交互经 _run_on_pi_loop 桥接（run_coroutine_threadsafe）。
+# ---------------------------------------------------------------------------
+
+_PI_LOOP: Optional[asyncio.AbstractEventLoop] = None
+_PI_CLIENT: Optional["PiSidecarClient"] = None
+_PI_EVENT_LISTENERS: Dict[str, Callable[[str, str, Dict[str, Any]], None]] = {}
+
+
+def _pi_loop() -> asyncio.AbstractEventLoop:
+    """pi sidecar 专用事件循环（守护线程；进程生命周期内复用）。"""
+    global _PI_LOOP
+    if _PI_LOOP is None or _PI_LOOP.is_closed():
+        loop = asyncio.new_event_loop()
+        threading.Thread(target=loop.run_forever, name="pi-sidecar-loop", daemon=True).start()
+        _PI_LOOP = loop
+    return _PI_LOOP
+
+
+def _run_on_pi_loop(coro, *, timeout: float = 30.0):
+    """从任意线程把协程桥接到 pi loop 并阻塞取结果（B4：唯一桥接入口）。"""
+    return asyncio.run_coroutine_threadsafe(coro, _pi_loop()).result(timeout)
+
+
+def _get_pi_client():
+    """Pi sidecar client 进程级单例（B3/B5：client 级回调接线）。"""
+    global _PI_CLIENT
+    if _PI_CLIENT is None:
+        from src.pi_sidecar.client import PiSidecarClient
+
+        _PI_CLIENT = PiSidecarClient(on_event=_on_pi_event, on_host_request=_on_pi_host_request)
+    return _PI_CLIENT
+
+
+def _on_pi_event(event: str, session_id: str, data: Dict[str, Any]) -> None:
+    """client on_event 回调（pi loop 线程）：派发给该会话的 attempt 事件泵。"""
+    listener = _PI_EVENT_LISTENERS.get(session_id)
+    if listener is not None:
+        listener(event, session_id, data)
+
+
+async def _on_pi_host_request(op: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """client on_host_request 回调（pi loop 线程）：按 _pi_host_handlers 注册表分发（B3/B5）。
+
+    返回 dict = 成功 result；返回 {"_host_error_": {...}} = 回 ok:false 错误帧（Task 9 语义）。
+    """
+    svc = _get_session_service_safe()
+    if svc is None:
+        return {"_host_error_": {"code": "internal", "message": "session service not bootstrapped"}}
+    handler = svc._pi_host_handlers.get(op)
+    if handler is None:
+        return {"_host_error_": {"code": "unknown_op", "message": f"unhandled host op: {op}"}}
+    return await handler(params)
+
+
+def _get_session_service_safe():
+    """回调线程里惰性取 service 单例；未装配（如 CLI 直跑）时返回 None。"""
+    try:
+        from src.api.state import _get_session_service
+
+        return _get_session_service()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 class SessionService:
@@ -56,6 +133,29 @@ class SessionService:
         # on the enforce path; off/shadow cancel via _active_loops.
         self._active_cancels: Dict[str, Any] = {}
         self._search_index = get_shared_index()
+        self._pi_sessions: Dict[str, Dict[str, Any]] = {}
+        self._active_pi_sessions: set = set()
+        self._manifest_sent: bool = False
+        self._pi_registry = None  # build_registry 产物缓存（一次构建）
+        self._pi_bridges: Dict[str, "GatewayBridge"] = {}  # session_id -> GatewayBridge
+        self._pi_host_handlers: Dict[str, Any] = {"tool_invoke": self._handle_tool_invoke_host}
+
+    async def _handle_tool_invoke_host(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """host op `tool_invoke`（B5 注册表项）：按幂等键前缀还原 session_id。"""
+        session_id = str(params.get("idempotencyKey", ":").split(":")[0] or "")
+        return await self._pi_gateway_bridge(session_id).handle_invoke(params)
+
+    def _pi_gateway_bridge(self, session_id: str) -> "GatewayBridge":
+        """每会话 GatewayBridge 惰性缓存（registry 全局构建一次，单一 choke point）。"""
+        if self._pi_registry is None:
+            from src.tools import build_registry
+
+            self._pi_registry = build_registry(persistent_memory=None, include_shell_tools=False)
+        if session_id not in self._pi_bridges:
+            from src.pi_sidecar.gateway_bridge import GatewayBridge
+
+            self._pi_bridges[session_id] = GatewayBridge(self._pi_registry)
+        return self._pi_bridges[session_id]
 
     def create_session(self, title: str = "", config: Optional[Dict[str, Any]] = None) -> Session:
         """Create a new session.
@@ -109,10 +209,31 @@ class SessionService:
         if not session:
             raise ValueError(f"Session {session_id} not found")
 
+        if get_agent_engine() == "pi":
+            from src.pi_sidecar.migration import is_migrated
+
+            # design §Session Persistence：pi 引擎执行路径不写 SessionStore messages（用户消息入 Pi 会话）
+            message = Message(session_id=session_id, role=role, content=content)
+            self.event_bus.emit(
+                session_id, "message.received", {"message_id": message.message_id, "role": role, "content": content}
+            )
+            if role != "user":
+                return {"message_id": message.message_id}
+            self._pi_sessions.setdefault(session_id, {"migrated": is_migrated(session_id)})
+            attempt = Attempt(session_id=session_id, parent_attempt_id=session.last_attempt_id, prompt=content)
+            self.store.create_attempt(attempt)
+            session.last_attempt_id = attempt.attempt_id
+            self.store.update_session(session)
+            self.event_bus.emit(session_id, "attempt.created", {"attempt_id": attempt.attempt_id, "prompt": content})
+            asyncio.create_task(self._run_attempt(session, attempt, include_shell_tools=include_shell_tools))
+            return {"message_id": message.message_id, "attempt_id": attempt.attempt_id}
+
         message = Message(session_id=session_id, role=role, content=content)
         self.store.append_message(message)
         self._search_index.index_message(session_id, role, content)
-        self.event_bus.emit(session_id, "message.received", {"message_id": message.message_id, "role": role, "content": content})
+        self.event_bus.emit(
+            session_id, "message.received", {"message_id": message.message_id, "role": role, "content": content}
+        )
 
         if role != "user":
             return {"message_id": message.message_id}
@@ -130,7 +251,21 @@ class SessionService:
 
     def get_messages(self, session_id: str, limit: int = 100) -> list[Message]:
         """Return the message history."""
-        return self.store.get_messages(session_id, limit)
+        if get_agent_engine() == "pi" and session_id in self._pi_sessions:
+            return self._pi_messages(session_id, limit)
+        return self.store.get_messages(session_id, limit=limit)
+
+    def _pi_messages(self, session_id: str, limit: int) -> list:
+        from src.pi_sidecar.projection import pi_messages_to_store_messages
+
+        client = _get_pi_client()
+        if client.unavailable or not client.started:
+            return self.store.get_messages(session_id, limit=limit)
+        try:
+            r = _run_on_pi_loop(client.request("get_messages", {"session_id": session_id, "limit": limit}), timeout=15)
+            return pi_messages_to_store_messages(session_id, r.get("messages", []))
+        except Exception:  # noqa: BLE001 — 投影失败降级旧数据（只读历史）
+            return self.store.get_messages(session_id, limit=limit)
 
     def cancel_current(self, session_id: str) -> bool:
         """Cancel the currently running AgentLoop for a session.
@@ -142,6 +277,14 @@ class SessionService:
             Whether cancellation succeeded. True means an active loop or
             runtime cancel handle existed and received a cancel signal.
         """
+        if get_agent_engine() == "pi" and session_id in self._active_pi_sessions:
+            client = _get_pi_client()
+            if not client.unavailable and client.started:
+                try:
+                    _run_on_pi_loop(client.request("abort", {"session_id": session_id}), timeout=10)
+                    return True
+                except SidecarError as exc:
+                    logger.warning("pi abort failed for %s: %s", session_id, exc)
         cancelled = False
         loop = self._active_loops.get(session_id)
         if loop is not None:
@@ -155,6 +298,9 @@ class SessionService:
 
     async def _run_attempt(self, session: Session, attempt: Attempt, *, include_shell_tools: bool = False) -> None:
         """Execute an Attempt in the background."""
+        if get_agent_engine() == "pi":
+            await self._run_attempt_pi(session, attempt, include_shell_tools=include_shell_tools)
+            return
         attempt.mark_running()
         self.store.update_attempt(attempt)
         self.event_bus.emit(session.session_id, "attempt.started", {"attempt_id": attempt.attempt_id})
@@ -201,6 +347,41 @@ class SessionService:
             self.store.update_attempt(attempt)
             self.event_bus.emit(session.session_id, "attempt.failed", {"attempt_id": attempt.attempt_id, "error": str(exc)})
 
+    async def _run_attempt_pi(self, session: Session, attempt: Attempt, *, include_shell_tools: bool = False) -> None:
+        """Pi 引擎 attempt 投影：Attempt/ledger 照旧；messages 不落盘（design §Session Persistence）。
+
+        B4：_run_with_pi 是同步方法（pi loop 桥接），经 _AGENT_EXECUTOR 线程运行，
+        与 legacy `agent.run` 的执行形状完全一致。
+        """
+        attempt.mark_running()
+        self.store.update_attempt(attempt)
+        self.event_bus.emit(session.session_id, "attempt.started", {"attempt_id": attempt.attempt_id})
+        try:
+            result = await asyncio.get_running_loop().run_in_executor(
+                _AGENT_EXECUTOR,
+                lambda: self._run_with_pi(
+                    attempt, include_shell_tools=include_shell_tools, session_config=dict(session.config)
+                ),
+            )
+            if result.get("status") == "success":
+                attempt.mark_completed(summary=result.get("content", ""))
+            else:
+                attempt.mark_failed(error=result.get("reason", "unknown"))
+            attempt.run_dir = result.get("run_dir")
+            self.store.update_attempt(attempt)
+            self.event_bus.emit(
+                session.session_id,
+                "attempt.completed" if attempt.status == AttemptStatus.COMPLETED else "attempt.failed",
+                {"attempt_id": attempt.attempt_id, "status": attempt.status.value,
+                 "summary": attempt.summary, "error": attempt.error, "run_dir": attempt.run_dir},
+            )
+        except Exception as exc:
+            attempt.mark_failed(error=str(exc))
+            self.store.update_attempt(attempt)
+            self.event_bus.emit(session.session_id, "attempt.failed", {"attempt_id": attempt.attempt_id, "error": str(exc)})
+        finally:
+            self._active_pi_sessions.discard(session.session_id)
+
     async def _run_with_agent(
         self,
         attempt: Attempt,
@@ -230,6 +411,25 @@ class SessionService:
         from src.config.loader import load_runtime_agent_config, sanitize_session_overrides
         from src.config.schema import get_reliability_runtime_mode
         from src.telemetry import counters
+
+        if get_agent_engine() == "pi":
+            provider = (os.getenv("LANGCHAIN_PROVIDER") or "openai").strip().lower()
+            if provider in LEGACY_ONLY_PROVIDERS:
+                self.event_bus.emit(
+                    attempt.session_id,
+                    "pi.notice",
+                    {"kind": "legacy_provider_fallback", "message": f"provider {provider} is legacy-engine-only"},
+                )
+            else:
+                return await asyncio.get_running_loop().run_in_executor(
+                    _AGENT_EXECUTOR,
+                    lambda: self._run_with_pi(
+                        attempt,
+                        messages=messages,
+                        include_shell_tools=include_shell_tools,
+                        session_config=session_config,
+                    ),
+                )
 
         # ponytail: branch at construction. off runs the EXACT current path
         # below (zero reliability code on the hot path); shadow/enforce
@@ -322,6 +522,128 @@ class SessionService:
                 result["metrics"] = metrics
 
         return result
+
+    def _run_with_pi(self, attempt, *, messages=None, include_shell_tools=False, session_config=None) -> Dict[str, Any]:
+        """Pi sidecar 执行路径（design §Architecture）。同步方法（B4），返回 AgentLoop.run() 兼容 dict。"""
+        from src.core.state import RunStateStore
+        from src.pi_sidecar import events as pi_events
+        from src.pi_sidecar.manifest import build_tool_manifest
+        from src.pi_sidecar.projection import build_attempt_result
+
+        session_id = attempt.session_id
+        run_dir = str(RunStateStore().create_run_dir(self.runs_dir))
+        state = pi_events.NormState()
+        client = _get_pi_client()
+
+        # 事件泵定义（B4：listener 注册表 + threading.Event；M2：entry_ids 收集）。
+        # 定义在前、注册在 prompt 之前（section 2）——事件可能同步到达。
+        terminal = threading.Event()
+        collected = {"text": "", "entry_ids": [], "tool_call_ids": [], "react_trace": []}
+
+        def on_event(event: str, sid: str, data: Dict[str, Any]) -> None:
+            if sid != session_id or event != "session_event":
+                return
+            ptype = str(data.get("type"))
+            payload = dict(data.get("payload") or {})
+            if ptype in ("message_start", "message_end") and payload.get("entryId"):
+                eid = str(payload["entryId"])
+                if eid not in collected["entry_ids"]:
+                    collected["entry_ids"].append(eid)
+            if ptype == "message_end" and (payload.get("message") or {}).get("role") == "assistant":
+                from src.pi_sidecar.events import _text_of
+
+                collected["text"] = _text_of(payload["message"])
+            if ptype == "tool_execution_end":
+                collected["tool_call_ids"].append(payload.get("toolCallId"))
+            for name, ndata in pi_events.normalize_event(ptype, payload, state=state):
+                ndata = dict(ndata)
+                ndata["attempt_id"] = attempt.attempt_id
+                self.event_bus.emit(session_id, name, ndata)
+                if name == "tool_result":
+                    collected["react_trace"].append(
+                        {"type": "tool_call", "tool": ndata.get("tool"), "result_preview": ndata.get("preview")}
+                    )
+            if ptype == "agent_end" and payload.get("isTerminal") is not False:
+                terminal.set()
+
+        # 1) 启动（B4：started 公开属性；失败 → 永久 unavailable，绝不回退 legacy）
+        if client.unavailable or not client.started:
+            try:
+                _run_on_pi_loop(client.start(), timeout=60)
+            except SidecarError:
+                pass  # unavailable 状态由 client 记录
+        if client.unavailable:
+            return build_attempt_result(
+                status="failed",
+                content="",
+                run_dir=run_dir,
+                react_trace=[],
+                iterations=0,
+                metrics=None,
+                reason="pi_sidecar_unavailable",
+            )
+
+        # 2) 会话打开/迁移/新建 + manifest + prompt
+        try:
+            try:
+                _run_on_pi_loop(client.request("open_session", {"session_id": session_id}), timeout=30)
+            except SidecarError as exc:
+                if exc.code != "not_found":
+                    raise
+                from src.pi_sidecar.migration import migrate_session_if_needed
+
+                migrated = _run_on_pi_loop(migrate_session_if_needed(self, client, session_id), timeout=120)
+                if not migrated:
+                    _run_on_pi_loop(client.request("new_session", {"session_id": session_id}), timeout=30)
+            if not self._manifest_sent:
+                self._pi_gateway_bridge(session_id)  # 惰性构建 self._pi_registry（一次）
+                tools = build_tool_manifest(self._pi_registry)
+                _run_on_pi_loop(client.request("set_tool_manifest", {"tools": tools}), timeout=120)
+                self._manifest_sent = True
+            self._pi_sessions.setdefault(session_id, {"migrated": True})
+            self._active_pi_sessions.add(session_id)
+            # 事件泵先于 prompt 注册（事件可能同步到达；FakeClient 单测依赖此顺序）
+            _PI_EVENT_LISTENERS[session_id] = on_event
+            _run_on_pi_loop(client.request("prompt", {"session_id": session_id, "text": attempt.prompt}), timeout=30)
+        except SidecarError as exc:
+            code = "pi_sidecar_unavailable" if exc.code == "pi_sidecar_unavailable" else exc.code
+            self._active_pi_sessions.discard(session_id)
+            return build_attempt_result(
+                status="failed", content="", run_dir=run_dir, react_trace=[], iterations=0, metrics=None, reason=code
+            )
+
+        # 3) 等待终止 agent_end（isTerminal!==false；listener 已在 prompt 前注册）
+        try:
+            if not terminal.wait(timeout=1800.0):
+                return build_attempt_result(
+                    status="failed",
+                    content=collected["text"],
+                    run_dir=run_dir,
+                    react_trace=collected["react_trace"],
+                    iterations=state.iter,
+                    metrics=None,
+                    reason="pi_turn_timeout",
+                )
+        finally:
+            _PI_EVENT_LISTENERS.pop(session_id, None)
+            self._active_pi_sessions.discard(session_id)
+
+        collected["react_trace"].append({"type": "answer", "content": collected["text"][:500]})
+        metrics = self._load_metrics(Path(run_dir))
+        return build_attempt_result(
+            status="success",
+            content=collected["text"],
+            run_dir=run_dir,
+            react_trace=collected["react_trace"],
+            iterations=state.iter,
+            metrics=metrics,
+            pi_meta={
+                "session_file": (self._pi_sessions.get(session_id) or {}).get("session_file"),
+                "pi_session_id": session_id,
+                "entry_ids": collected["entry_ids"],
+                "tool_call_ids": collected["tool_call_ids"],
+            },
+        )
 
     async def _run_with_reliability(
         self,
@@ -605,6 +927,7 @@ class SessionService:
     def _load_metrics(run_dir: Path) -> Optional[Dict[str, Any]]:
         """Load metrics.csv from a run directory."""
         import csv
+
         metrics_path = run_dir / "artifacts" / "metrics.csv"
         if not metrics_path.exists():
             return None

@@ -33,6 +33,8 @@ def test_run_with_agent_keeps_event_loop_responsive_during_registry_build(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setenv("VIBE_AGENT_ENGINE", "legacy")  # Task 12: legacy path under test
+
     def _slow_build_registry(**kwargs):
         del kwargs
         time.sleep(0.25)
@@ -77,6 +79,7 @@ def test_off_default_runs_agentloop_without_reliability_summary(
     tmp_path: Path,
 ) -> None:
     """Task 7 regression: default VIBE_RELIABILITY_RUNTIME=off keeps the path unchanged."""
+    monkeypatch.setenv("VIBE_AGENT_ENGINE", "legacy")  # Task 12: legacy path under test
     monkeypatch.delenv("VIBE_RELIABILITY_RUNTIME", raising=False)
     monkeypatch.setattr("src.session.service.get_shared_index", lambda: _DummyIndex())
     monkeypatch.setattr("src.tools.build_registry", lambda **kw: object())

@@ -85,7 +85,9 @@ class _FakeAgentLoop:
     constructed: list["_FakeAgentLoop"] = []
     scripted: dict[str, Any] = {"status": "success", "content": "hello world"}
 
-    def __init__(self, *, registry: Any, llm: Any, event_callback: Any, max_iterations: int, persistent_memory: Any) -> None:
+    def __init__(
+        self, *, registry: Any, llm: Any, event_callback: Any, max_iterations: int, persistent_memory: Any
+    ) -> None:
         self.registry = registry
         self.event_callback = event_callback
         self.run_calls: list[dict[str, Any]] = []
@@ -100,6 +102,9 @@ class _FakeAgentLoop:
 
 
 def _apply_common_patches(monkeypatch, registry: Any = None) -> None:
+    # These regressions exercise the legacy AgentLoop path directly; the pi
+    # engine is the default, so pin the engine explicitly (Task 12 cutover).
+    monkeypatch.setenv("VIBE_AGENT_ENGINE", "legacy")
     _FakeAgentLoop.constructed.clear()
     monkeypatch.setattr("src.session.service.get_shared_index", lambda: _DummyIndex())
     monkeypatch.setattr("src.tools.build_registry", lambda **kw: registry or _FakeRegistry())
@@ -166,6 +171,7 @@ def test_unknown_mode_falls_back_to_off(monkeypatch, tmp_path: Path) -> None:
 
 def test_shadow_does_not_duplicate_provider_or_tool_calls(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("VIBE_RELIABILITY_RUNTIME", "shadow")
+    monkeypatch.setenv("VIBE_AGENT_ENGINE", "legacy")  # Task 12: legacy path under test
 
     build_calls: list[dict[str, Any]] = []
 
@@ -208,6 +214,7 @@ def test_shadow_does_not_duplicate_provider_or_tool_calls(monkeypatch, tmp_path:
 
 def test_enforce_forwards_session_event_run_dir_shell_policy(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("VIBE_RELIABILITY_RUNTIME", "enforce")
+    monkeypatch.setenv("VIBE_AGENT_ENGINE", "legacy")  # Task 12: legacy path under test
 
     build_calls: list[dict[str, Any]] = []
 
@@ -228,9 +235,7 @@ def test_enforce_forwards_session_event_run_dir_shell_policy(monkeypatch, tmp_pa
     service = _make_service(tmp_path)
     attempt = Attempt(session_id="enforce-session", prompt="get AAPL price")
 
-    result = asyncio.run(
-        service._run_with_agent(attempt, messages=[], session_config={}, include_shell_tools=True)
-    )
+    result = asyncio.run(service._run_with_agent(attempt, messages=[], session_config={}, include_shell_tools=True))
 
     assert build_calls[0]["include_shell_tools"] is True
     assert result["status"] == "success"
@@ -262,9 +267,7 @@ def test_enforce_forwards_agentloop_run_dir(monkeypatch, tmp_path: Path) -> None
 
     result = asyncio.run(service._run_with_agent(attempt, messages=[], session_config={}))
 
-    assert result["run_dir"] == str(agent_run_dir), (
-        f"enforce must reuse the AgentLoop run_dir, got {result['run_dir']}"
-    )
+    assert result["run_dir"] == str(agent_run_dir), f"enforce must reuse the AgentLoop run_dir, got {result['run_dir']}"
 
 
 def test_enforce_events_carry_same_attempt_id(monkeypatch, tmp_path: Path) -> None:
@@ -331,6 +334,7 @@ def test_enforce_blocks_side_effecting_tools(monkeypatch, tmp_path: Path) -> Non
     holds trivially. This pins the structural guarantee.
     """
     monkeypatch.setenv("VIBE_RELIABILITY_RUNTIME", "enforce")
+    monkeypatch.setenv("VIBE_AGENT_ENGINE", "legacy")  # Task 12: legacy path under test
 
     write_tool = _FakeTool("trading_place_order", side_effecting=True)
     registry = _FakeRegistry(
