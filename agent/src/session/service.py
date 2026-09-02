@@ -301,6 +301,17 @@ class SessionService:
         if get_agent_engine() == "pi":
             await self._run_attempt_pi(session, attempt, include_shell_tools=include_shell_tools)
             return
+        await self._run_attempt_legacy(session, attempt, include_shell_tools=include_shell_tools)
+
+    async def _run_attempt_legacy(
+        self, session: Session, attempt: Attempt, *, include_shell_tools: bool = False
+    ) -> None:
+        """Legacy 引擎 attempt 执行体：engine=legacy 与 legacy-only provider 回退共用（gate 见 _run_attempt_pi）。
+
+        VIBE_AGENT_ENGINE=legacy 时由 _run_attempt 直入；pi 引擎下 vip_server/openai-codex
+        会话经 _run_attempt_pi 的显式回退 gate 落入本方法（Global Constraint：显式配置驱动，
+        非静默回退）。
+        """
         attempt.mark_running()
         self.store.update_attempt(attempt)
         self.event_bus.emit(session.session_id, "attempt.started", {"attempt_id": attempt.attempt_id})
@@ -328,7 +339,8 @@ class SessionService:
                 reply_metadata["metrics"] = attempt.metrics
 
             reply = Message(
-                session_id=session.session_id, role="assistant",
+                session_id=session.session_id,
+                role="assistant",
                 content=self._format_result_message(attempt),
                 linked_attempt_id=attempt.attempt_id,
                 metadata=reply_metadata,
@@ -338,21 +350,41 @@ class SessionService:
             self.event_bus.emit(
                 session.session_id,
                 "attempt.completed" if attempt.status == AttemptStatus.COMPLETED else "attempt.failed",
-                {"attempt_id": attempt.attempt_id, "status": attempt.status.value,
-                 "summary": attempt.summary, "error": attempt.error, "run_dir": attempt.run_dir},
+                {
+                    "attempt_id": attempt.attempt_id,
+                    "status": attempt.status.value,
+                    "summary": attempt.summary,
+                    "error": attempt.error,
+                    "run_dir": attempt.run_dir,
+                },
             )
 
         except Exception as exc:
             attempt.mark_failed(error=str(exc))
             self.store.update_attempt(attempt)
-            self.event_bus.emit(session.session_id, "attempt.failed", {"attempt_id": attempt.attempt_id, "error": str(exc)})
+            self.event_bus.emit(
+                session.session_id, "attempt.failed", {"attempt_id": attempt.attempt_id, "error": str(exc)}
+            )
 
     async def _run_attempt_pi(self, session: Session, attempt: Attempt, *, include_shell_tools: bool = False) -> None:
         """Pi 引擎 attempt 投影：Attempt/ledger 照旧；messages 不落盘（design §Session Persistence）。
 
         B4：_run_with_pi 是同步方法（pi loop 桥接），经 _AGENT_EXECUTOR 线程运行，
         与 legacy `agent.run` 的执行形状完全一致。
+
+        Global Constraint gate（入口）：legacy-only provider（vip_server/openai-codex）无法
+        映射 Pi ModelRegistry——发 pi.notice 诊断事件后，该 attempt 显式回退 legacy 执行体
+        （_run_attempt_legacy），绝不触达 sidecar（显式配置驱动，非静默回退）。
         """
+        provider = (os.getenv("LANGCHAIN_PROVIDER") or "openai").strip().lower()
+        if provider in LEGACY_ONLY_PROVIDERS:
+            self.event_bus.emit(
+                attempt.session_id,
+                "pi.notice",
+                {"kind": "legacy_provider_fallback", "message": f"provider {provider} is legacy-engine-only"},
+            )
+            await self._run_attempt_legacy(session, attempt, include_shell_tools=include_shell_tools)
+            return
         attempt.mark_running()
         self.store.update_attempt(attempt)
         self.event_bus.emit(session.session_id, "attempt.started", {"attempt_id": attempt.attempt_id})
@@ -372,13 +404,20 @@ class SessionService:
             self.event_bus.emit(
                 session.session_id,
                 "attempt.completed" if attempt.status == AttemptStatus.COMPLETED else "attempt.failed",
-                {"attempt_id": attempt.attempt_id, "status": attempt.status.value,
-                 "summary": attempt.summary, "error": attempt.error, "run_dir": attempt.run_dir},
+                {
+                    "attempt_id": attempt.attempt_id,
+                    "status": attempt.status.value,
+                    "summary": attempt.summary,
+                    "error": attempt.error,
+                    "run_dir": attempt.run_dir,
+                },
             )
         except Exception as exc:
             attempt.mark_failed(error=str(exc))
             self.store.update_attempt(attempt)
-            self.event_bus.emit(session.session_id, "attempt.failed", {"attempt_id": attempt.attempt_id, "error": str(exc)})
+            self.event_bus.emit(
+                session.session_id, "attempt.failed", {"attempt_id": attempt.attempt_id, "error": str(exc)}
+            )
         finally:
             self._active_pi_sessions.discard(session.session_id)
 
@@ -477,9 +516,7 @@ class SessionService:
         )
         # ponytail: best-effort telemetry — failure must not affect agent
         try:
-            counters.record_reliability_phase(
-                "registry_build", int((time.perf_counter() - _reg_t0) * 1000)
-            )
+            counters.record_reliability_phase("registry_build", int((time.perf_counter() - _reg_t0) * 1000))
         except Exception:
             pass
 
@@ -508,9 +545,7 @@ class SessionService:
         finally:
             # ponytail: best-effort telemetry — record even on exception.
             try:
-                counters.record_reliability_phase(
-                    "agent_loop", int((time.perf_counter() - _loop_t0) * 1000)
-                )
+                counters.record_reliability_phase("agent_loop", int((time.perf_counter() - _loop_t0) * 1000))
             except Exception:
                 pass
             self._active_loops.pop(session_id, None)

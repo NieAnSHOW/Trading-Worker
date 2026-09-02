@@ -170,27 +170,17 @@ def test_legacy_engine_flag_uses_old_path(svc, monkeypatch):
     assert called == {"pi": 0, "legacy": 1}
 
 
-def test_legacy_only_provider_falls_back_explicitly(svc, monkeypatch):
-    monkeypatch.setenv("VIBE_AGENT_ENGINE", "pi")
-    monkeypatch.setenv("LANGCHAIN_PROVIDER", "vip_server")
-    session = svc.create_session(title="t")
-    import src.session.service as svc_mod
+class _DummyAgentLoop:
+    def __init__(self, **kwargs):
+        del kwargs
 
-    class _DummyAgentLoop:
-        def __init__(self, **kwargs):
-            del kwargs
+    def run(self, **kwargs):
+        del kwargs
+        return {"status": "success", "content": "legacy 答案", "run_dir": "", "react_trace": [], "iterations": 0}
 
-        def run(self, **kwargs):
-            del kwargs
-            return {"status": "success", "content": "", "run_dir": "", "react_trace": [], "iterations": 0}
 
-    pi_called = {"n": 0}
-    # 走真实 _run_with_agent pi 分支：legacy-only provider → 发 pi.notice 后落 legacy 函数体
-    monkeypatch.setattr(
-        svc_mod.SessionService,
-        "_run_with_pi",
-        lambda self, attempt, **k: pi_called.__setitem__("n", pi_called["n"] + 1) or {},
-    )
+def _stub_legacy_deps(monkeypatch):
+    """stub _run_with_agent legacy 函数体依赖，让真实 legacy 执行体可跑完。"""
     monkeypatch.setattr("src.tools.build_registry", lambda **kw: object())
     monkeypatch.setattr("src.providers.chat.ChatLLM", lambda: object())
     monkeypatch.setattr("src.memory.persistent.PersistentMemory", lambda: object())
@@ -198,12 +188,60 @@ def test_legacy_only_provider_falls_back_explicitly(svc, monkeypatch):
     monkeypatch.setattr("src.config.loader.load_runtime_agent_config", lambda overrides=None: object())
     monkeypatch.setattr("src.config.loader.sanitize_session_overrides", lambda overrides: dict(overrides or {}))
 
-    asyncio.run(
-        svc._run_with_agent(Attempt(session_id=session.session_id, prompt="x", created_at="2026-08-30T00:00:00"))
-    )
-    assert pi_called["n"] == 0  # 显式回退 legacy（vip_server legacy-only），pi 路径绝不执行
+
+async def _send_and_drain(svc, session_id: str, text: str) -> str:
+    """走真实交互路径 send_message → 后台 _run_attempt task，并等 task 跑完。"""
+    resp = await svc.send_message(session_id, text)
+    await asyncio.gather(*[t for t in asyncio.all_tasks() if t is not asyncio.current_task()])
+    return resp["attempt_id"]
+
+
+@pytest.mark.parametrize("engine_env", ["pi", None])  # None = VIBE_AGENT_ENGINE 未设，get_agent_engine 默认 "pi"
+def test_legacy_only_provider_gate_routes_interactive_path_to_legacy(svc, monkeypatch, engine_env):
+    """vip_server 会话经 send_message 真实交互路径：pi 分支入口 gate 拦截，
+    (a) 不触达 sidecar，(b) 走 legacy 执行体，(c) 发 pi.notice。"""
+    if engine_env is not None:
+        monkeypatch.setenv("VIBE_AGENT_ENGINE", engine_env)
+    else:
+        monkeypatch.delenv("VIBE_AGENT_ENGINE", raising=False)
+    monkeypatch.setenv("LANGCHAIN_PROVIDER", "vip_server")
+
+    fake = _wire_pi(svc, FakeClient(), monkeypatch)  # 若 gate 失效会记录 sidecar 请求
+    _stub_legacy_deps(monkeypatch)
+    session = svc.create_session(title="t")
+
+    attempt_id = asyncio.run(_send_and_drain(svc, session.session_id, "hello legacy-only"))
+
+    # (a) sidecar 绝未触达：client 零请求、_run_with_pi 从未执行
+    assert fake.requests == []
+    # (b) legacy 执行体真实跑完：attempt 完成且 assistant 回复落 store（pi 路径从不写 store 消息）
+    attempt = svc.store.get_attempt(session.session_id, attempt_id)
+    assert attempt is not None and attempt.status.value == "completed"
+    msgs = svc.store.get_messages(session.session_id)
+    assert any(m.role == "assistant" for m in msgs)
+    # (c) pi.notice 诊断事件（kind=legacy_provider_fallback）
     notices = [e for e in svc.event_bus.replay(session.session_id, replay_all=True) if e.event_type == "pi.notice"]
     assert any(n.data.get("kind") == "legacy_provider_fallback" for n in notices)
+
+
+def test_legacy_engine_flag_gate_inert_for_legacy_only_provider(svc, monkeypatch):
+    """engine=legacy 时 gate 必须惰性：vip_server 直接走 legacy，不发 pi.notice、不触达 sidecar。"""
+    monkeypatch.setenv("VIBE_AGENT_ENGINE", "legacy")
+    monkeypatch.setenv("LANGCHAIN_PROVIDER", "vip_server")
+
+    fake = _wire_pi(svc, FakeClient(), monkeypatch)
+    _stub_legacy_deps(monkeypatch)
+    session = svc.create_session(title="t")
+
+    attempt_id = asyncio.run(_send_and_drain(svc, session.session_id, "hello legacy"))
+
+    assert fake.requests == []
+    attempt = svc.store.get_attempt(session.session_id, attempt_id)
+    assert attempt is not None and attempt.status.value == "completed"
+    msgs = svc.store.get_messages(session.session_id)
+    assert any(m.role == "assistant" for m in msgs)
+    notices = [e for e in svc.event_bus.replay(session.session_id, replay_all=True) if e.event_type == "pi.notice"]
+    assert notices == []
 
 
 def test_cancel_current_pi_engine_aborts(svc, monkeypatch):
