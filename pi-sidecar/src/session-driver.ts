@@ -45,7 +45,7 @@ interface PiAgentSession {
   };
 }
 
-class PiSessionHandle implements SessionLike {
+export class PiSessionHandle implements SessionLike {
   constructor(
     readonly sessionId: string,
     readonly sessionFile: string,
@@ -114,8 +114,18 @@ class PiSessionHandle implements SessionLike {
   }
 
   async navigateTree(entryId: string): Promise<string> {
-    const r = await this.s.navigateTree?.(entryId);
-    return typeof r === "string" ? r : entryId;
+    const r = (await this.s.navigateTree?.(entryId)) as
+      | { cancelled?: boolean; aborted?: boolean }
+      | undefined;
+    // 钉版 SDK（agent-session.d.ts:954-1006）返回 {cancelled, aborted?, …}，绝不返回字符串。
+    // cancelled/aborted = 导航被取消/中止，必须上抛而不是把请求的 entryId 当成功回显。
+    if (r && (r.cancelled === true || r.aborted === true)) {
+      throw Object.assign(
+        new Error(`navigateTree: navigation to ${entryId} was cancelled/aborted`),
+        { code: "navigation_failed" },
+      );
+    }
+    return entryId;
   }
 
   getMessages(beforeCursor: string | null, limit: number): { messages: MsgOut[]; nextCursor: string | null } {

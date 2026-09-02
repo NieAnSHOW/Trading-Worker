@@ -91,3 +91,28 @@ deepseek → `{api:"openai-completions", apiKey:"DEEPSEEK_API_KEY"}`；groq → 
 - **`bun tsc --noEmit` 无法启动**：tsconfig 引用 `bun-types` 但未安装（配置级错误，与本次改动无关，其余既有文件同样报此错）。brief 规定的 TS 门禁是 `cd pi-sidecar && bun test`，已全绿。未在本次范围加装 bun-types（Files list 不含 package.json）。
 - **测试写真实 ~/.vibe-trading/pi/agent**：smoke 测试的 `create()` 走真实 `createAgentSession`，会在 `~/.vibe-trading/pi/agent` 创建 agent.db/models.yml（writable user state，允许；非网络）。这是 brief 设计的 smoke 语义，Phase 8 集成测试再覆盖真实 provider 链路。
 - **test #5 的 `writeFileSync(join(dir,"marker"),"done")`** 无断言（仅证明 dir 可写），保留原样。
+
+## Fix: navigateTree failure surfacing
+
+**Finding (Important)**: `session-driver.ts` `PiSessionHandle.navigateTree` used
+`typeof r === "string" ? r : entryId`, silently reporting a cancelled/failed
+navigation as success with the requested entry id. Pinned SDK's navigateTree
+returns `Promise<{cancelled: boolean, aborted?: boolean, editorText?, editorImages?,
+summaryEntry?, sessionContext?, reopenAsk?, askReanswerCommitted?}>` — never a string
+(`pi-sidecar/node_modules/@oh-my-pi/pi-coding-agent/dist/types/session/agent-session.d.ts:954-1006`).
+
+**Change**:
+- `pi-sidecar/src/session-driver.ts` `navigateTree` now inspects the SDK result:
+  if `cancelled === true` or `aborted === true`, throws
+  `Object.assign(new Error("navigateTree: navigation to <id> was cancelled/aborted"),
+  { code: "navigation_failed" })`. On confirmed success returns the requested `entryId`
+  (contract `{leaf_id}`). Error is converted to a protocol error frame by the existing
+  no-throw outer guard via `errCode` (reads `e.code`, fallback `internal`) — code
+  `navigation_failed` is consistent with existing snake_case codes (`no_session`,
+  `stale_cursor`, …). `PiSessionHandle` exported to enable the focused unit test.
+- `pi-sidecar/src/session-driver.test.ts`: added a test covering `{cancelled:true}`,
+  `{aborted:true}`, SDK rejection passthrough, and the happy path (`{cancelled:false}` →
+  returns entryId). Existing happy-path fake in `commands.test.ts` untouched (still passes).
+
+**Test command**: `cd pi-sidecar && bun test`
+**Output summary**: `41 pass / 0 fail / 96 expect() calls across 6 files` (~1.15s).

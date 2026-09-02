@@ -25,6 +25,42 @@ describe("PiSessionDriver construction", () => {
     }
   });
 
+  test("navigateTree surfaces cancellation/abort as a thrown error, happy path returns entry id", async () => {
+    const { PiSessionHandle } = await import("./session-driver");
+    const dir = mkdtempSync(join(tmpdir(), "vibe-pidrv3-"));
+    try {
+      const idx = new SessionIndex(join(dir, "idx.json"), dir);
+      const make = (s: unknown) =>
+        new PiSessionHandle("sess1", join(dir, "sess1.json"), s, idx);
+
+      // 取消：{cancelled:true} 必须上抛，不能把请求的 entryId 当成功回显
+      await expect(
+        make({ navigateTree: async () => ({ cancelled: true }) }).navigateTree("leaf1"),
+      ).rejects.toThrow(/cancelled|aborted/);
+
+      // 中止：{aborted:true} 同样上抛
+      await expect(
+        make({ navigateTree: async () => ({ aborted: true }) }).navigateTree("leaf1"),
+      ).rejects.toThrow(/cancelled|aborted/);
+
+      // SDK 拒绝（reject）时错误原样透传
+      await expect(
+        make({
+          navigateTree: async () => {
+            throw new Error("sdk boom");
+          },
+        }).navigateTree("leaf1"),
+      ).rejects.toThrow(/sdk boom/);
+
+      // 成功：返回请求的 entryId
+      await expect(
+        make({ navigateTree: async () => ({ cancelled: false }) }).navigateTree("leaf9"),
+      ).resolves.toBe("leaf9");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("create produces session whose sessionFile lives under sessions dir and header id matches", async () => {
     const { PiSessionDriver } = await import("./session-driver");
     const dir = mkdtempSync(join(tmpdir(), "vibe-pidrv2-"));
