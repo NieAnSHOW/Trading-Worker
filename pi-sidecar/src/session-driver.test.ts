@@ -129,4 +129,42 @@ describe("PiSessionDriver construction", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // 回归守卫（Fix: builtin tool lockdown restored）：Global Constraint 要求 Pi 内建
+  // read/write/edit/bash 不可解析、manifest customTools 正常装载、任何工具执行不得绕过
+  // Python gateway。commit e1ca82ba 把 restrictToolNames 翻 false 后 toolNames:[] 并不
+  // 禁用内建——实测 write 仍在（plan mode 触发 ensureWriteRegistered 泄漏）。本测试断言
+  // 内建 write 缺席 + 注册的 custom tool 在会话工具集内（锁 = toolNames:[] + plan.enabled=false）。
+  test("builtin write/edit/bash are absent and manifest custom tool is present in session tools", async () => {
+    const { PiSessionDriver } = await import("./session-driver");
+    const dir = mkdtempSync(join(tmpdir(), "vibe-pidrv5-"));
+    try {
+      const fakeTool = {
+        name: "fake_manifest_tool",
+        description: "probe custom manifest tool",
+        parameters: { type: "object", properties: {} },
+        execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+      };
+      const bridge = {
+        customTools: () => [fakeTool],
+        onSessionEvent: () => {},
+      };
+      const driver = new PiSessionDriver({
+        index: new SessionIndex(join(dir, "idx.json"), dir),
+        toolBridge: bridge as never,
+        env: {},
+      });
+      const s = await driver.create("b2c3d4e5f6a7");
+      // PiSessionHandle 把底层 AgentSession 收在 private getter `s`；测试需探工具集，
+      // 单点边界断言形状（test-only，非生产路径）。
+      type ToolProbe = { getToolByName(name: string): unknown };
+      const raw: ToolProbe = (s as unknown as { s: ToolProbe }).s;
+      for (const builtin of ["read", "write", "edit", "bash"]) {
+        expect(raw.getToolByName(builtin), `builtin ${builtin} must not be resolvable`).toBeUndefined();
+      }
+      expect(raw.getToolByName("fake_manifest_tool")).toBeDefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

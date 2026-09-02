@@ -249,16 +249,22 @@ export class PiSessionDriver implements SessionDriver {
     const result = await createAgentSession({
       cwd: sessionsDir,
       agentDir,
-      settings: Settings.isolated(),
+      // plan.enabled=false（Global Constraint 工具锁定）：pinned SDK 18.0.11 里
+      // 非 restricted 会话的唯一内建泄漏点是 `ensureWriteRegistered`（sdk.ts 仅当
+      // hasDeferrableTools || planModeAvailable || deferMCPDiscoveryForUI 时注册 write）。
+      // enableMCP=false 已关掉 deferMCPDiscoveryForUI、无 deferrable 工具；再把
+      // plan.enabled 置 false 即可封死该路径——运行时探针实测 write/read/edit/bash
+      // 全部不可解析，customTools 正常装载，且内联 extensions 照常加载（model wiring 不破）。
+      settings: Settings.isolated({ "plan.enabled": false }),
       sessionManager,
       extensions: this.opts.extensions as never[],
       customTools: this.opts.toolBridge.customTools() as never[],
-      toolNames: [], // Global Constraint: 内建 read/write/edit/bash 全禁用
+      toolNames: [], // Global Constraint: 内建 read/write/edit/bash 全禁用（空列表 = createTools 零内建）
       // pinned SDK 18.0.11（Task 16 实证）：restrictToolNames=true 会把整个会话置于
       // "restricted" 模式——内联 extensions（vibe-providers/vibe-memory）与
       // preloadedPreparedExtensions 一律不装载（session 装配 `if (Tn) Dp=loadExtensions([])`）。
-      // 工具禁用由 toolNames:[] 单独保证（实测 _tools 为空）；restrictToolNames 必须
-      // false 才能让 provider 注册 + memory 注入 extension 生效（生产 model wiring 依赖它）。
+      // 必须 false 才能让 provider 注册 + memory 注入 extension 生效（生产 model wiring 依赖它）；
+      // 内建禁用改由 toolNames:[] + plan.enabled=false 组合保证（见上方 settings 注释）。
       restrictToolNames: false,
       allowRestrictedCustomTools: true,
       enableMCP: false,

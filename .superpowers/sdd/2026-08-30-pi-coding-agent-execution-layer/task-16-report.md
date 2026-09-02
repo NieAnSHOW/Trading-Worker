@@ -158,3 +158,28 @@ Task 16 Concern 落地（生产侧工具 manifest 时序缺陷，`agent/src/sess
 - `pytest agent/tests/test_sdk_order_gate.py agent/tests/test_mandate_enforcement.py -q` → 48 passed（safety narrow）
 - `ruff check src/session/service.py tests/pi_sidecar/test_service_cutover.py` → clean（仓库全量 223 错误为既有基线，均在未触碰文件）
 - 注：brief 的 `tests/test_session_service.py` 在本分支不存在（cutover 单测即 pi_sidecar/test_service_cutover.py，已含于 pi_sidecar 套件）
+
+## Fix: builtin tool lockdown restored (runtime-verified)
+
+Security finding (e1ca82ba flipped `restrictToolNames` false, dropping the plan-mandated builtin-disable gate). Runtime probe against pinned SDK 18.0.11 proved `toolNames:[]` alone does NOT disable builtins — a builtin WRITE was resolvable via `getToolByName` (the session's `ensureWriteRegistered` leak, sdk.ts, fires when `plan.enabled` is on). `restrictToolNames:true` WOULD close it but also skips loading the inline extensions (vibe-providers/vibe-memory) — breaking production model wiring. So neither the original combo nor the commit's combo is usable.
+
+### Options landed (`pi-sidecar/src/session-driver.ts::buildSession`)
+- `restrictToolNames: false` — kept (required so vibe-providers/vibe-memory inline extensions load; model wiring intact)
+- `toolNames: []` — kept (createTools with empty list ⇒ zero builtins)
+- `Settings.isolated({ "plan.enabled": false })` — NEW; neutralizes the sole remaining builtin-leak path (`ensureWriteRegistered`), which is driven by `planModeAvailable` (MCP is already off, no deferrable tools)
+
+### Probe evidence (three candidate combos, pinned SDK, fake manifest custom tool + spy inline extension)
+| combo | builtin write/read/edit/bash | custom manifest tool | inline extension invoked |
+|---|---|---|---|
+| A: restrict=true + allowCustom + toolNames:[] | none | present | **false** (model wiring breaks) |
+| B: current commit (restrict=false + toolNames:[]) | **write present** | present | true |
+| C: restrict=false + toolNames:[] + plan.enabled=false | **none** | present | **true** ✓ |
+
+Combo C landed. Runtime probe of the landed code: `getToolByName("read"/"write"/"edit"/"bash")` all undefined; registered manifest tool present.
+
+### Tests added
+- `pi-sidecar/src/session-driver.test.ts` → "builtin write/edit/bash are absent and manifest custom tool is present in session tools": builds a driver whose toolBridge returns a fake manifest tool, `driver.create(...)`, asserts `getToolByName` for read/write/edit/bash is undefined and the custom tool is defined. (Regression guard the suite lacked.)
+
+### Validation
+- `cd pi-sidecar && bun test` → 66 pass / 0 fail
+- `pytest agent/tests/pi_sidecar -q` → 82 passed
