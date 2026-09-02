@@ -11,12 +11,39 @@ export interface MainDeps {
   hostCall: (op: string, params: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
   writeOut: (raw: string) => void;
   extensions: unknown[]; // ExtensionFactory[]；测试注入 []，生产注入 vibe-memory + vibe-providers
+  // final-review finding 6：gateReady 覆盖 ready 帧是否须等扩展装载完成（生产缺省 true）；
+  // loadExtensions 覆盖生产动态 import 装载器（竞态单测注入 deferred loader）。
+  gateReady?: boolean;
+  loadExtensions?: (extensions: unknown[]) => Promise<void>;
+}
+
+async function defaultLoadExtensions(extensions: unknown[]): Promise<void> {
+  for (const [prod, dev] of [
+    ["extensions/vibe-providers.js", "../extensions/vibe-providers/index.ts"],
+    ["extensions/vibe-memory.js", "../extensions/vibe-memory/index.ts"],
+  ] as const) {
+    let mod: { default?: unknown } | undefined;
+    for (const p of [`${import.meta.dir}/${prod}`, dev]) {
+      try {
+        mod = (await import(p)) as { default?: unknown };
+        break;
+      } catch {
+        // 候选路径不存在/装载失败 → 尝试下一个（vibe-memory 属 Task 14，开发态预期缺）
+      }
+    }
+    if (mod && mod.default !== undefined) extensions.push(mod.default);
+    else process.stderr.write(`[vibe:extension-load] ${prod}: no loadable module\n`);
+  }
 }
 
 export function createMain(deps?: Partial<MainDeps>) {
-  // 1) ready 帧（协议输出唯一出口 writeOut；测试可注入捕获器）
+  // 1) ready 帧（协议输出唯一出口 writeOut；测试可注入捕获器）。不再在入口同步发出——
+  // 收尾的 init() 负责：gateReady（生产）时先 await 扩展装载再 emitReady（final-review finding 6）。
   const writeOut = deps?.writeOut ?? ((raw: string) => process.stdout.write(raw));
-  writeOut(encodeFrame({ v: 1, event: "ready", data: { protocol: 1, pid: process.pid, sdk: "18.0.11" } }));
+  const emitReady = () =>
+    writeOut(encodeFrame({ v: 1, event: "ready", data: { protocol: 1, pid: process.pid, sdk: "18.0.11" } }));
+  const gateReady = deps?.gateReady ?? (!deps?.writeOut && !deps?.driver && !deps?.extensions);
+  const loadExtensions = deps?.loadExtensions ?? defaultLoadExtensions;
 
   // 2) HostRpc：sidecar→Python 双向 RPC（响应帧经 handleLine 回流派发）。
   //    测试注入 hostCall 时把它当作传输层：出站请求帧解码后直连注入函数，结果以 ok 帧
@@ -73,8 +100,9 @@ export function createMain(deps?: Partial<MainDeps>) {
   // （commands.ts 的 wireEvents 负责 Python 侧 session_event 帧；本处负责 bridge 侧，
   //   ToolBridgeLike 接缝刻意不含 onSessionEvent，由装配层直接从 handle 接线）
   function wireSession(s: SessionLike, vibeId: string): SessionLike {
-    toolBridge.setSessionId(vibeId);
-    s.subscribe((e) => toolBridge.onSessionEvent(e));
+    // final-review finding 3：事件按 vibeId 路由到该会话的幂等键 scope（绝不让交错
+    // 到达的其它会话事件改写本会话的 assistantEntryId/turnIndex）。
+    s.subscribe((e) => toolBridge.onSessionEvent(e, vibeId));
     return s;
   }
   const driver: SessionDriver = {
@@ -86,30 +114,7 @@ export function createMain(deps?: Partial<MainDeps>) {
     cancelToolCall: (callId) => baseDriver.cancelToolCall(callId),
   };
 
-  if (!deps?.driver && !deps?.extensions) {
-    // 生产模式：从暂存资源动态加载 extensions（打包产物 extensions/*.js，Task 15）；
-    // 开发态回退相对源路径的 index.ts（brief 实现者注）
-    void (async () => {
-      for (const [prod, dev] of [
-        ["extensions/vibe-providers.js", "../extensions/vibe-providers/index.ts"],
-        ["extensions/vibe-memory.js", "../extensions/vibe-memory/index.ts"],
-      ] as const) {
-        let mod: { default?: unknown } | undefined;
-        for (const p of [`${import.meta.dir}/${prod}`, dev]) {
-          try {
-            mod = (await import(p)) as { default?: unknown };
-            break;
-          } catch {
-            // 候选路径不存在/装载失败 → 尝试下一个（vibe-memory 属 Task 14，开发态预期缺）
-          }
-        }
-        if (mod && mod.default !== undefined) extensions.push(mod.default);
-        else process.stderr.write(`[vibe:extension-load] ${prod}: no loadable module\n`);
-      }
-    })();
-  }
-
-  // 5) 命令处理 + stdin 行循环
+  // 5) 命令处理 + 收尾 init（ready-gating，final-review finding 6）
   const handler = createCommandHandler({
     driver,
     sink: writeOut,
@@ -132,7 +137,17 @@ export function createMain(deps?: Partial<MainDeps>) {
     await handler(line);
   }
 
-  if (!deps?.writeOut) {
+  // 6) 收尾 init：gateReady（生产）先 await 扩展装载再发 ready，随后挂 stdin 循环。
+  //    async 函数在首个 await 前同步执行——测试（gateReady=false）的 emitReady 仍是
+  //    同步先发，preserves harness "ready 首帧" 契约；生产等 vibe-providers/vibe-memory
+  //    就绪后才向 Python 宣告 ready（杜绝首个 new_session 撞 "no model"）。
+  async function init(): Promise<void> {
+    if (gateReady) await loadExtensions(extensions);
+    emitReady();
+    if (!deps?.writeOut) attachStdin();
+  }
+
+  function attachStdin(): void {
     // 真实 stdin 循环（测试注入 writeOut 时不启动）
     const splitter = new LineSplitter();
     process.stdin.setEncoding("utf8");
@@ -148,6 +163,8 @@ export function createMain(deps?: Partial<MainDeps>) {
     });
     process.stdin.on("end", () => process.exit(0));
   }
+
+  void init();
 
   return {
     handleLine,

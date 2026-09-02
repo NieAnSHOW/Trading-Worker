@@ -78,4 +78,28 @@ describe("main entrypoint", () => {
     expect(await p).toEqual({ block: "B" });
     main.close();
   });
+
+  test("ready is emitted only after extension-load resolves (finding 6 gate)", async () => {
+    // 生产 ready-gating 回归守卫：gateReady 下 ready 帧不得先于 vibe-providers/vibe-memory
+    // 装载完成发出（否则首个 new_session 撞 "no model"，靠重试自愈）。注入 deferred loader，
+    // 断言装载 resolve 前零输出、resolve 后首帧为 ready——无真实计时器，纯微任务拍平驱动。
+    const written: string[] = [];
+    const gate = Promise.withResolvers<void>();
+    const main = createMain({
+      driver: makeFakeDriver(),
+      extensions: [],
+      hostCall: async () => ({}),
+      writeOut: (raw: string) => written.push(raw),
+      gateReady: true,
+      loadExtensions: async () => gate.promise,
+    });
+    // 装载未完成：ready 被 gate 住，尚无任何输出
+    expect(written.length).toBe(0);
+    gate.resolve();
+    await gate.promise;
+    // 拍平 microtask 队列直至 init 续体（emitReady）执行
+    for (let i = 0; i < 16 && written.length === 0; i++) await Promise.resolve();
+    expect(decodeFrame(written[0])).toMatchObject({ event: "ready", data: { protocol: 1 } });
+    main.close();
+  });
 });

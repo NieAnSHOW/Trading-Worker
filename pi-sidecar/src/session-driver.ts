@@ -11,9 +11,10 @@ export const PI_SESSIONS_DIR = join(homedir(), ".vibe-trading", "pi", "sessions"
 /**
  * 工具桥的构造面（Task 7 `ToolBridge` 的占位契约）。Task 7 未落地时本文件不 import
  * `./tool-bridge`（避免编译期依赖缺失）；真实 ToolBridge 结构上满足此接口。
+ * final-review finding 3：customTools 按会话绑定——传入 vibeId 让幂等键上下文隔离。
  */
 interface ToolBridgeLike {
-  customTools(): unknown[];
+  customTools(sessionId?: string): unknown[];
   setManifest(tools: unknown[]): Promise<number>;
   cancel(callId: string): boolean;
 }
@@ -269,7 +270,8 @@ export class PiSessionDriver implements SessionDriver {
       settings: Settings.isolated({ "plan.enabled": false }),
       sessionManager,
       extensions: this.opts.extensions as never[],
-      customTools: this.opts.toolBridge.customTools() as never[],
+      // final-review finding 3：按会话绑定工具闭包（幂等键上下文隔离）。
+      customTools: this.opts.toolBridge.customTools(vibeId) as never[],
       toolNames: [], // Global Constraint: 内建 read/write/edit/bash 全禁用（空列表 = createTools 零内建）
       // pinned SDK 18.0.11（Task 16 实证）：restrictToolNames=true 会把整个会话置于
       // "restricted" 模式——内联 extensions（vibe-providers/vibe-memory）与

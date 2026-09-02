@@ -170,4 +170,29 @@ describe("ToolBridge", () => {
     expect(parsed.error).toBe("tool_cancelled"); // 映射 commands.ts 的 cancelled/tool_cancelled 语义
     expect(parsed.outcome).toBe("outcome_unknown");
   });
+
+  test("finding 3: interleaved sessions' tool invokes carry their own idempotency prefix", async () => {
+    // final-review finding 3 回归守卫：两个并发会话（4-thread executor）事件交错到达时，
+    // 每会话的幂等键前缀必须固定为各自 vibeId，不得被对方的事件改写（否则 Python 侧
+    // _handle_tool_invoke_host 按前缀还原 session_id 会把结果落进错误的会话）。
+    const calls: string[] = [];
+    const bridge = new ToolBridge(async (_op, params) => {
+      calls.push(String((params as Record<string, unknown>).idempotencyKey));
+      return { content: "{}", isError: false, outcome: "ok" };
+    });
+    await bridge.setManifest([TOOL]);
+    const toolsA = bridge.customTools("sess-A") as Array<{
+      execute: (id: string, params: Record<string, unknown>, signal: AbortSignal | null, onUpdate: unknown, ctx: unknown) => Promise<unknown>;
+    }>;
+    const toolsB = bridge.customTools("sess-B") as Array<{
+      execute: (id: string, params: Record<string, unknown>, signal: AbortSignal | null, onUpdate: unknown, ctx: unknown) => Promise<unknown>;
+    }>;
+    // 交错喂事件：A 起一轮、B 起一轮、A 又起（若为共享单值，B 的上下文会被 A 覆盖）。
+    bridge.onSessionEvent({ type: "message_start", payload: { entryId: "eA1" } }, "sess-A");
+    bridge.onSessionEvent({ type: "message_start", payload: { entryId: "eB1" } }, "sess-B");
+    bridge.onSessionEvent({ type: "message_start", payload: { entryId: "eA2" } }, "sess-A");
+    await toolsA[0].execute("callA", { query: "x" }, null, null, {});
+    await toolsB[0].execute("callB", { query: "y" }, null, null, {});
+    expect(calls).toEqual(["sess-A:eA2:callA", "sess-B:eB1:callB"]);
+  });
 });
