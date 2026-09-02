@@ -43,7 +43,7 @@ export class SessionIndex {
 
   constructor(
     private readonly indexPath = DEFAULT_INDEX_PATH,
-    private readonly sessionsDir = DEFAULT_SESSIONS_DIR,
+    private readonly _sessionsDir = DEFAULT_SESSIONS_DIR,
   ) {
     try {
       const raw = JSON.parse(readFileSync(this.indexPath, "utf8")) as Record<string, IndexedSession | string>;
@@ -55,6 +55,11 @@ export class SessionIndex {
     } catch {
       this.map = {};
     }
+  }
+
+  /** The sessions directory this index manages (drivers place new sessions here). */
+  get sessionsDir(): string {
+    return this._sessionsDir;
   }
 
   resolve(vibeId: string): string | null {
@@ -74,7 +79,7 @@ export class SessionIndex {
     }
     this.map[vibeId] = { path: jsonlPath, headerId };
     mkdirSync(dirname(this.indexPath), { recursive: true });
-    mkdirSync(this.sessionsDir, { recursive: true });
+    mkdirSync(this._sessionsDir, { recursive: true });
     const tmp = `${this.indexPath}.tmp`;
     writeFileSync(tmp, JSON.stringify(this.map, null, 2));
     renameSync(tmp, this.indexPath); // 原子写（design §Lazy migration 标记语义）
